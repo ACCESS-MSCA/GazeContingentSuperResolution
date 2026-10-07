@@ -1,0 +1,35 @@
+[project]
+name = "gaze-contingent-super-resolution"
+version = "0.1.0"
+description = "Gaze-contingent video super-resolution with NDI streaming"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.24",
+    "diffusers==0.33.0",
+    "transformers==4.37.2",
+    "huggingface-hub",
+    "safetensors",
+    "accelerate",
+    "cyndilib",
+]
+
+[project.optional-dependencies]
+# NATTEN ships per-torch/CUDA wheels and is not on PyPI for every combination.
+# Install it matched to your torch/CUDA build, e.g.
+#   uv pip install natten==0.21.5+torch2100cu128 -f https://whl.natten.org
+natten = ["natten"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.16.5",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -3,3 +3,14 @@
 
 # macOS
 .DS_Store
+
+# Python
+__pycache__/
+*.py[co]
+
+# Test videos (large)
+Videos/
+
+# Python environment
+.venv/
+.pytest_cache/
