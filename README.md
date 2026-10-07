@@ -4,7 +4,7 @@ Super-resolution that adapts to where the viewer is looking: full-quality upscal
 
 ## Status
 
-Early setup: a video is decoded, upscaled 4x (`vsr/`) and streamed over NDI in one process. No gaze handling yet.
+Early setup: a video is decoded, upscaled 4x (the `vsr/` SR model, or bicubic as a baseline) and streamed over NDI in one process. No gaze handling yet.
 
 ## Setup
 
@@ -61,8 +61,8 @@ ffmpeg -i Videos/big_buck_bunny.mp4 -vf "scale=iw/8:-2:flags=lanczos" -c:v libx2
 
 Performance on an Apple M4 (MPS):
 
-- 240x136 input (960x544 output): about 6 fps, so the stream plays in slow motion against the 60 fps source.
-- 480x270 input (1920x1080 output): runs out of memory. The model's self-attention builds a very large buffer on MPS; NVIDIA GPUs avoid this with memory-efficient attention.
+- 240x136 input (960x544 output): about 6 fps, so the stream plays in slow motion against the 60 fps source. Bicubic (`--model bicubic`) runs at about 55 fps on the same input.
+- 480x270 input (1920x1080 output): the SR model runs out of memory. The model's self-attention builds a very large buffer on MPS; NVIDIA GPUs avoid this with memory-efficient attention.
 
 Real-time output needs an NVIDIA GPU or a lighter model.
 
