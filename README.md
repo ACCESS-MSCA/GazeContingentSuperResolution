@@ -25,12 +25,14 @@ uv run python main.py                                           # Videos/big_buc
 uv run python main.py --start 10                                # skip the black fade-in at the start
 uv run python main.py Videos/testfile_50fps_240x136.mp4 --dual  # extra "-Square" source with a moving overlay
 uv run python main.py --start 10 --frames 60 --once             # short test run
+uv run python main.py --start 10 --model bicubic                # bicubic baseline to compare against
 ```
 
 | Option | Default | Notes |
 |---|---|---|
 | `video` | `Videos/big_buck_bunny_240x136.mp4` | Used at its own resolution; output is 4x that. |
-| `--k` | `3` | `1`: diffusion SR on every frame. `>1`: SR on every k-th frame, RIFE interpolates the rest (faster, up to k-1 frames delay). See `vsr/README.md`. |
+| `--model` | `vsr` | `vsr`: the SR model (+ RIFE). `bicubic`: plain bicubic interpolation, a fast baseline for comparison (no weights, near real time). |
+| `--k` | `3` | vsr only. `1`: diffusion SR on every frame. `>1`: SR on every k-th frame, RIFE interpolates the rest (faster, up to k-1 frames delay). See `vsr/README.md`. |
 | `--batch` | `2` | Frames fed to the upscaler per call. |
 | `--start` | `0` | Start offset in seconds. |
 | `--frames` | all | Stop after N frames in total. |
@@ -72,6 +74,7 @@ utils/
   ffmpeg.py         video/audio decoding
   ndi.py            NDI output: senders, per-frame audio, pacing, overlay source
   overlay.py        moving square for the --dual source
+  bicubic.py        bicubic upscaler (--model bicubic)
 vsr/                4x video super-resolution (SR model + RIFE), see vsr/README.md
 tests/              vsr tests: uv run pytest (no GPU needed)
 Videos/             test videos (not in git)

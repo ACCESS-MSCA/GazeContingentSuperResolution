@@ -1,15 +1,15 @@
 """
 Stream a video over NDI, upscaling every frame 4x before it is sent.
 
-One process: ffmpeg decodes a pre-downscaled video as is, VSRStream upscales
-it, and the upscaled frames go out as an NDI source with the video's audio,
+One process: ffmpeg decodes a pre-downscaled video as is, the SR model (or plain
+bicubic with --model bicubic) upscales it, and the upscaled frames go out as an NDI source with the video's audio,
 paced to its fps. --dual adds a second source with a moving overlay. The video
 loops until Ctrl-C (or plays once with --once). If upscaling is slower than
 real time the stream simply runs slow.
 
 Usage:
     python main.py
-    python main.py <path_to_video> [--k 3] [--batch 2] [--start 0]
+    python main.py <path_to_video> [--model vsr|bicubic] [--k 3] [--batch 2] [--start 0]
                    [--frames N] [--once] [--device mps] [--name NAME] [--dual]
 """
 
@@ -20,6 +20,7 @@ from pathlib import Path
 
 import torch
 
+from utils.bicubic import BicubicStream
 from utils.ffmpeg import decode_audio_to_array, probe_video, read_rgb_frames
 from utils.ndi import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, NDIOutput, rgb_to_bgra
 from vsr import VSRPipeline
@@ -47,7 +48,9 @@ def main():
     # --- Command-line options -------------------------------------------------
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("video", nargs="?", default=str(DEFAULT_VIDEO))
-    # k=1: diffusion SR on every frame. k>1: SR on every k-th frame (keyframes),
+    # vsr: the SR model (+ RIFE). bicubic: plain interpolation, a fast baseline.
+    parser.add_argument("--model", choices=["vsr", "bicubic"], default="vsr")
+    # (vsr only) k=1: diffusion SR on every frame. k>1: SR on every k-th frame (keyframes),
     # RIFE interpolates the frames in between (faster, adds up to k-1 frames delay).
     parser.add_argument("--k", type=int, default=3, help="keyframe stride")
     parser.add_argument("--batch", type=int, default=2, help="frames per push()")
@@ -67,14 +70,21 @@ def main():
 
     print(f"Source  : {args.video}")
     print(f"Size    : LR {lr_w}x{lr_h} -> HR {hr_w}x{hr_h} @ {float(fps):.3f} fps")
-    print(f"VSR     : k={args.k}, batch={args.batch}, device={device}")
+    if args.model == "vsr":
+        print(f"Upscale : vsr, k={args.k}, batch={args.batch}, device={device}")
+    else:
+        print(f"Upscale : bicubic, batch={args.batch}, device={device}")
 
     # --- Upscaler -------------------------------------------------------------
-    # Loads the SR model (and RIFE when k > 1); weights download on first run.
-    # The stream keeps keyframe spacing consistent across push() calls, so frames
-    # can be fed in small batches as they are decoded.
-    pipeline = VSRPipeline(k=args.k, device=device)
-    stream = pipeline.stream()
+    # Both options expose push()/flush(), so the main loop is the same for each.
+    if args.model == "vsr":
+        # Loads the SR model (and RIFE when k > 1); weights download on first run.
+        # The stream keeps keyframe spacing consistent across push() calls, so
+        # frames can be fed in small batches as they are decoded.
+        stream = VSRPipeline(k=args.k, device=device).stream()
+    else:
+        # No model: every frame comes back from push() straight away.
+        stream = BicubicStream(scale=SCALE, device=device)
 
     # --- NDI output -----------------------------------------------------------
     # Audio is decoded whole, then trimmed so it lines up with --start.
