@@ -1,7 +1,7 @@
 """Video super-resolution inference: diffusion SR + RIFE interpolation + NATTEN.
 
-Symbols are resolved lazily so that `import vsr` -- and in particular
-`vsr.scheduling`, which is pure Python -- does not pull in torch and diffusers.
+Symbols are resolved lazily so that `import upscale.vsr` -- and in particular
+`upscale.vsr.scheduling`, which is pure Python -- does not pull in torch and diffusers.
 """
 
 from .scheduling import Gap, Plan, is_keyframe, make_gap, plan_schedule

@@ -2,7 +2,7 @@
 
 import pytest
 
-from vsr.scheduling import group_gaps_by_timesteps, plan_schedule
+from upscale.vsr.scheduling import group_gaps_by_timesteps, plan_schedule
 
 
 @pytest.mark.parametrize("num_frames", range(1, 40))

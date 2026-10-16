@@ -3,8 +3,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from vsr import frames as frame_io
-from vsr.padding import pad_to_multiple, scale_padding, unpad_tensor
+from upscale.vsr import frames as frame_io
+from upscale.vsr.padding import pad_to_multiple, scale_padding, unpad_tensor
 
 
 def test_uint8_hwc_roundtrips_exactly():

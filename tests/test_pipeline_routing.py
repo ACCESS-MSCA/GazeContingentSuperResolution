@@ -12,7 +12,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from vsr.pipeline import VSRPipeline
+from upscale.vsr.pipeline import VSRPipeline
 
 
 class _SRStub:

@@ -7,8 +7,8 @@ torch = pytest.importorskip("torch")
 
 from test_pipeline_routing import _build, _ramp_clip
 
-from vsr.scheduling import is_keyframe, plan_schedule
-from vsr.streaming import VSRStream
+from upscale.vsr.scheduling import is_keyframe, plan_schedule
+from upscale.vsr.streaming import VSRStream
 
 
 def _stream_clip(pipeline, clip, batch_size):

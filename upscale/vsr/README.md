@@ -5,7 +5,7 @@ RIFE frame interpolation, and optional NATTEN neighborhood attention.
 
 ```python
 import numpy as np
-from vsr import VSRPipeline
+from upscale.vsr import VSRPipeline
 
 pipeline = VSRPipeline(k=2, natten_layers=3)
 
@@ -43,7 +43,7 @@ keyframes = sorted(set(range(0, N, K)) | {N - 1})
 plan for a clip without loading anything:
 
 ```python
-from vsr.scheduling import plan_schedule
+from upscale.vsr.scheduling import plan_schedule
 
 plan = plan_schedule(num_frames=100, k=3)
 print(plan.keyframes)  # frames the diffusion model will run on
@@ -145,5 +145,5 @@ A few RIFE tests — real-checkpoint key coverage and interpolated motion — ar
 skipped unless the weights are already cached. Prime them with:
 
 ```bash
-uv run python -c "from vsr.weights import ensure_interpolation_weights as e; e()"
+uv run python -c "from upscale.vsr.weights import ensure_interpolation_weights as e; e()"
 ```

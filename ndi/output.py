@@ -7,8 +7,6 @@ from cyndilib.sender import Sender
 from cyndilib.video_frame import VideoSendFrame
 from cyndilib.wrapper.ndi_structs import FourCC
 
-from utils.overlay import draw_square
-
 
 def make_sender(source_name: str, width: int, height: int, fps: Fraction) -> tuple:
     """Create and configure a VideoSendFrame + Sender pair for one NDI output."""
@@ -39,54 +37,48 @@ AUDIO_CHANNELS = 2
 
 
 class NDIOutput:
-    """Paced NDI output for one video: per-frame audio and an optional overlay source.
+    """Paced NDI output: one or more sources sent together, with per-frame audio.
 
-    Use as a context manager and call send() once per BGRA frame. Audio is sliced
-    per frame from `audio_data`, so it stays in step with the video even when
-    frames arrive slower than real time.
+    `sources` maps a key to (NDI name, width, height). Use as a context manager and call
+    send() once per frame step with a {key: BGRA frame} dict: every source gets its frame
+    and the same audio block, then the call sleeps until the next frame slot. Audio is
+    sliced per frame from `audio_data`, so it stays in step with the video even when frames
+    arrive slower than real time.
     """
 
-    def __init__(self, source_name, width, height, fps, audio_data=None, dual=False):
+    def __init__(self, sources, fps, audio_data=None):
         fps_float = float(fps)
         self.frame_duration = 1.0 / fps_float
 
         samples_per_frame_exact = AUDIO_SAMPLE_RATE / max(fps_float, 1.0)
         self.audio_samples_per_frame = max(1, int(round(samples_per_frame_exact)))
 
-        # Create main sender
-        self.sender_plain, _ = make_sender(source_name, width, height, fps)
-        print(f"NDI name: '{source_name}'")
-        print(
-            f"Audio   : {AUDIO_SAMPLE_RATE} Hz, {AUDIO_CHANNELS} ch, "
-            f"{self.audio_samples_per_frame} samples/frame"
-        )
-
-        if abs(samples_per_frame_exact - self.audio_samples_per_frame) > 1e-6:
-            print(
-                f"[warn] fractional audio/frame ({samples_per_frame_exact:.6f}); "
-                "using fixed-size blocks for channel stability."
-            )
-
         self.audio_enabled = audio_data is not None and audio_data.shape[1] > 0
         self.audio_data = audio_data
         self.total_audio_samples = int(audio_data.shape[1]) if self.audio_enabled else 0
 
+        self.senders = {}
+        for key, (name, width, height) in sources.items():
+            sender, _ = make_sender(name, width, height, fps)
+            if self.audio_enabled:
+                self._attach_audio(sender)
+            self.senders[key] = sender
+            print(f"NDI name: '{name}' ({width}x{height})")
         if self.audio_enabled:
-            self._attach_audio(self.sender_plain)
+            print(
+                f"Audio   : {AUDIO_SAMPLE_RATE} Hz, {AUDIO_CHANNELS} ch, "
+                f"{self.audio_samples_per_frame} samples/frame"
+            )
+            if abs(samples_per_frame_exact - self.audio_samples_per_frame) > 1e-6:
+                print(
+                    f"[warn] fractional audio/frame ({samples_per_frame_exact:.6f}); "
+                    "using fixed-size blocks for channel stability."
+                )
         else:
             print("[warn] could not start audio decoder; sending video only.")
 
-        # Optional second sender with overlay
-        self.sender_overlay = None
-        if dual:
-            overlay_name = f"{source_name}-Square"
-            self.sender_overlay, _ = make_sender(overlay_name, width, height, fps)
-            print(f"NDI name: '{overlay_name}'")
-            if self.audio_enabled:
-                self._attach_audio(self.sender_overlay)
-
-        self.frame_idx = 0
         self.dropped_timing_count = 0
+        self.idle_s = 0.0  # time spent waiting for the next frame slot (headroom)
         self.restart()
 
     def _attach_audio(self, sender):
@@ -103,16 +95,14 @@ class NDIOutput:
         self.next_frame_time = time.monotonic()
 
     def __enter__(self):
-        self.sender_plain.__enter__()
-        if self.sender_overlay is not None:
-            self.sender_overlay.__enter__()
+        for sender in self.senders.values():
+            sender.__enter__()
         self.restart()
         return self
 
     def __exit__(self, *exc):
-        if self.sender_overlay is not None:
-            self.sender_overlay.__exit__(*exc)
-        self.sender_plain.__exit__(*exc)
+        for sender in reversed(list(self.senders.values())):
+            sender.__exit__(*exc)
 
     def _next_audio_block(self):
         end_pos = self.audio_pos + self.audio_samples_per_frame
@@ -129,29 +119,16 @@ class NDIOutput:
             self.audio_pos = remain
         return audio_frame
 
-    def send(self, bgra: np.ndarray):
-        """Sends one writable (H, W, 4) BGRA frame, then sleeps until the next frame slot."""
-        plain_frame = bgra.ravel()
-
-        overlay_frame = None
-        if self.sender_overlay is not None:
-            # Copy only for overlay path so the plain frame stays untouched.
-            bgra_sq = np.array(bgra, copy=True)
-            draw_square(bgra_sq, self.frame_idx)
-            overlay_frame = bgra_sq.ravel()
-
+    def send(self, frames):
+        """Sends {key: (H, W, 4) BGRA frame} on the matching sources, then sleeps until the next frame slot."""
         if self.audio_enabled and self.total_audio_samples > 0:
             audio_frame = self._next_audio_block()
-            self.sender_plain.write_video_and_audio(plain_frame, audio_frame)
-            if overlay_frame is not None:
-                self.sender_overlay.write_video_and_audio(overlay_frame, audio_frame)
+            for key, bgra in frames.items():
+                self.senders[key].write_video_and_audio(bgra.ravel(), audio_frame)
         else:
             # Async send reduces chance the Python loop blocks on I/O.
-            self.sender_plain.write_video_async(plain_frame)
-            if overlay_frame is not None:
-                self.sender_overlay.write_video_async(overlay_frame)
-
-        self.frame_idx += 1
+            for key, bgra in frames.items():
+                self.senders[key].write_video_async(bgra.ravel())
 
         # Schedule next frame using an accumulated target time.
         self.next_frame_time += self.frame_duration
@@ -160,6 +137,7 @@ class NDIOutput:
 
         if sleep_for > 0:
             time.sleep(sleep_for)
+            self.idle_s += sleep_for
         else:
             self.dropped_timing_count += 1
             if self.dropped_timing_count % 120 == 0:

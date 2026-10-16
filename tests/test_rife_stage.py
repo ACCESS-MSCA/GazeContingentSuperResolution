@@ -5,7 +5,7 @@ exercise shapes and the pad/warp plumbing). The checkpoint tests are skipped
 unless the RIFE weights have already been fetched, so the suite never downloads
 anything on its own -- prime them with:
 
-    python -c "from vsr.weights import ensure_interpolation_weights as e; e()"
+    python -c "from upscale.vsr.weights import ensure_interpolation_weights as e; e()"
 """
 
 import os
@@ -15,11 +15,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from vsr.interpolation import InterpolationPipeline
-from vsr.interpolation.rife.ifnet import IFNet
-from vsr.interpolation.rife.model import RifeModel
-from vsr.padding import pad_to_multiple, unpad_tensor
-from vsr.weights import DEFAULT_CACHE, INTERPOLATION_RELPATH
+from upscale.vsr.interpolation import InterpolationPipeline
+from upscale.vsr.interpolation.rife.ifnet import IFNet
+from upscale.vsr.interpolation.rife.model import RifeModel
+from upscale.vsr.padding import pad_to_multiple, unpad_tensor
+from upscale.vsr.weights import DEFAULT_CACHE, INTERPOLATION_RELPATH
 
 _TRAIN_LOG = os.path.join(DEFAULT_CACHE, "interpolation", INTERPOLATION_RELPATH)
 _HAS_WEIGHTS = os.path.isfile(os.path.join(_TRAIN_LOG, "flownet.pkl"))

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from vsr import frames as frame_io
+from upscale.vsr import frames as frame_io
 
 
 class BicubicStream:

@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stream Control</title>
+<style>
+  :root {
+    --bg: #f5f5f4; --panel: #ffffff; --text: #1c1917; --muted: #78716c; --border: #e7e5e4;
+    --accent: #2563eb; --accent-text: #ffffff; --gaze: #16a34a; --head: #d97706; --danger: #dc2626;
+    --pad: #fafaf9; --grid: #e7e5e4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0c0a09; --panel: #1c1917; --text: #f5f5f4; --muted: #a8a29e; --border: #292524;
+      --accent: #3b82f6; --gaze: #22c55e; --head: #f59e0b; --danger: #f87171; --pad: #141210; --grid: #292524; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; align-items: start;
+    grid-template-columns: 330px minmax(0, 1fr); }
+  .content { display: grid; gap: 16px; align-content: start; min-width: 0; }
+  .perf { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px 20px; }
+  .perf h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 6px; }
+  .perf dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; font-size: 13px; }
+  .perf dt { color: var(--muted); white-space: nowrap; }
+  .perf dd#pUp { flex-direction: column; align-items: flex-end; gap: 0; }
+  fieldset.pick { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px 8px; margin: 0;
+    display: grid; gap: 4px; }
+  fieldset.pick legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+  /* A source's own settings, nested under it like sub-bullets while it is ticked. */
+  .src-row { display: grid; gap: 3px; }
+  .src-row .opts { display: grid; gap: 3px; margin-left: 22px; padding-left: 10px;
+    border-left: 2px solid var(--border); font-size: 12px; color: var(--muted); }
+  .src-row .opts[hidden] { display: none; }
+  .src-row .opts input[type=number] { width: 56px; padding: 2px 6px; }
+  label.sub-opt { flex-direction: row; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  label.check.mini { font-size: 12px; color: var(--muted); gap: 4px; }
+  details.more summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  details.more > .grid { margin-top: 8px; }
+  input:disabled { opacity: .5; }
+  .perf h3 .unit { display: block; text-transform: none; letter-spacing: 0; font-weight: 400; margin-top: 1px; }
+  .perf dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; display: flex; justify-content: flex-end;
+    white-space: nowrap;
+    align-items: center; gap: 6px; }
+  .meter { width: 56px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; display: inline-block; }
+  .meter span { display: block; height: 100%; background: var(--gaze); }
+  .meter.hot span { background: var(--danger); }
+  .perf dt.top, .perf dd.top { color: var(--gaze); font-weight: 600; }
+  .pipeline-wrap { overflow-x: auto; }
+  svg.pipeline { display: block; width: 100%; min-width: 640px; height: auto; }
+  svg.pipeline .stage rect { fill: var(--pad); stroke: var(--border); stroke-width: 1.2; }
+  svg.pipeline .stage.out rect { stroke: var(--gaze); }
+  svg.pipeline .t { font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--text); }
+  svg.pipeline .d { font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--muted);
+    font-variant-numeric: tabular-nums; }
+  svg.pipeline .d.c { text-anchor: middle; }
+  svg.pipeline .d.end { text-anchor: end; }
+  /* fps chip in a processing box's top-right corner: green keeps up with the video, amber is slower */
+  svg.pipeline .chip rect { fill: color-mix(in srgb, var(--gaze) 16%, transparent); stroke: none; }
+  svg.pipeline .chip text { font: 600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    fill: var(--gaze); text-anchor: middle; font-variant-numeric: tabular-nums; }
+  svg.pipeline .chip.slow rect { fill: color-mix(in srgb, var(--head) 20%, transparent); }
+  svg.pipeline .chip.slow text { fill: var(--head); }
+  /* a required rate, not a measurement */
+  svg.pipeline .chip.fixed rect { fill: color-mix(in srgb, var(--muted) 16%, transparent); }
+  svg.pipeline .chip.fixed text { fill: var(--muted); }
+  svg.pipeline .flow { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  svg.pipeline .head { fill: var(--muted); }
+  svg.pipeline .off { opacity: .3; }
+  svg.pipeline .flow.guide { stroke: var(--accent); stroke-width: 2; }
+  svg.pipeline .guide-head { fill: var(--accent); }
+  svg.pipeline .guide-t { fill: var(--accent); font-weight: 600; }
+  /* Left panel: stream options, then the NDI streams. */
+  nav.sidebar { display: grid; gap: 16px; }
+  .sources { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .sources li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 2px 8px; align-items: center;
+    padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); }
+  .sources li.ours { border-color: var(--gaze); background: color-mix(in srgb, var(--gaze) 8%, transparent); }
+  .sources .live { width: 8px; height: 8px; border-radius: 50%; background: var(--gaze); }
+  .sources li:not(.ours) .live { background: var(--muted); }
+  .sources .stream { font-weight: 600; overflow-wrap: anywhere; }
+  .sources .host { grid-column: 2; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .badge { grid-column: 2; justify-self: start; font-size: 11px; font-weight: 600; padding: 0 6px;
+    border-radius: 99px; background: var(--gaze); color: #fff; }
+  .empty { color: var(--muted); font-size: 13px; margin: 0; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .pill { padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+    background: var(--border); color: var(--muted); }
+  .pill.streaming { background: var(--gaze); color: #fff; }
+  .pill.loading { background: var(--head); color: #fff; }
+  .pill.error { background: var(--danger); color: #fff; }
+  .stats { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+  .full { grid-column: 1 / -1; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  label.check { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 14px; }
+  input, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px; min-width: 0; }
+  input[type=checkbox] { accent-color: var(--accent); }
+  input[type=range] { padding: 0; accent-color: var(--accent); }
+  .buttons { display: flex; gap: 8px; margin-top: 14px; }
+  .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; min-height: 20px; }
+  .card-head h2 { margin: 0 auto 0 0; }  /* the title takes the left; buttons and ⓘ sit in the right corner */
+  section { position: relative; }
+  /* Same height as the card title (13px text): no padding, icon sized to the title line, centred on it. */
+  button.info { border: 0; background: none; padding: 0; color: var(--muted); border-radius: 50%; display: flex;
+    align-items: center; height: 1.4em; font-size: 13px; }
+  button.info:hover, button.info[aria-expanded="true"] { color: var(--accent); }
+  button.info svg { width: 1em; height: 1em; }
+  /* Explanations float over the card, so opening one does not move the pad or the frame. */
+  .info-text { position: absolute; z-index: 5; top: 44px; left: 12px; right: 12px; margin: 0; padding: 10px 12px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 6px 20px rgb(0 0 0 / .14); font-size: 13px; line-height: 1.45; }
+  .buttons.top { margin: 0; }
+  button { font: inherit; font-weight: 600; border-radius: 6px; padding: 7px 14px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  /* Options changed while streaming: ▶ restarts with them */
+  button.primary.pending { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+    animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 15%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { button.primary.pending { animation: none; } }
+  .pending { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; font-size: 13px;
+    background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button svg { width: 16px; height: 16px; display: block; }
+  button.icon { padding: 7px 10px; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; border-radius: 0; font-weight: 500; }
+  .seg button.on { background: var(--accent); color: var(--accent-text); }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  /* One control row of the same height above each box, so the pad and the frame line up. */
+  .controls { display: flex; gap: 8px; align-items: center; min-height: 36px; }
+  .controls select { flex: 1; width: 0; }  /* shrinks instead of wrapping, so both rows stay one line */
+  /* The pad and the frame preview have the stream's frame shape (16:9 until a stream reports its size). */
+  .frame { aspect-ratio: var(--frame-aspect, 16 / 9); }
+  .pad { position: relative; margin-top: 12px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--pad); touch-action: none; cursor: crosshair; user-select: none;
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 12.5% 25%; background-position: center; }
+  .pad.off { opacity: .55; }
+  .dot { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; pointer-events: none; }
+  .dot.head { background: var(--head); box-shadow: 0 0 0 4px color-mix(in srgb, var(--head) 30%, transparent); }
+  .note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+  .error { color: var(--danger); font-size: 13px; margin: 10px 0 0; white-space: pre-wrap; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+  /* Narrower: Stream on top, the two gaze cards side by side below it. */
+  /* Narrower: the left panel stays, Head and Predicted gaze stack beside it; phones stack everything. */
+  @media (max-width: 1000px) { main { grid-template-columns: 310px minmax(0, 1fr); } }
+  @media (max-width: 680px) { main { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Stream control</h1>
+    <span id="state" class="pill">idle</span>
+    <span id="stats" class="stats"></span>
+  </header>
+
+  <nav class="sidebar" aria-label="Stream options and NDI streams">
+    <section class="stream-card">
+      <div class="card-head">
+        <h2>Stream</h2>
+        <div class="buttons top">
+          <button class="primary icon" id="start" title="Start (restarts with these options)" aria-label="Start"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg></button>
+          <button class="icon" id="stop" title="Stop" aria-label="Stop"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg></button>
+        </div>
+        <button class="info" aria-label="About the stream options" aria-expanded="false" aria-controls="info-stream"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button>
+      </div>
+      <form id="opts" class="grid" onsubmit="return false">
+        <label class="full">Video <select name="video" id="video"></select></label>
+        <fieldset class="full pick">
+          <legend>NDI sources</legend>
+          <label class="check"><input type="checkbox" data-source="source"> Source</label>
+          <div class="src-row">
+            <label class="check"><input type="checkbox" data-source="vsr"> VSR</label>
+            <div class="opts" id="vsrOpts">
+              <label class="sub-opt">k <input name="k" type="number" min="1" step="1" title="SR on every k-th frame, RIFE in between"></label>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" data-source="bicubic"> Bicubic</label>
+          <div class="src-row">
+            <label class="check"><input type="checkbox" data-source="gaze"> Bicubic + gaze prediction</label>
+            <div class="opts" id="gazeOpts">
+              <label class="sub-opt">Horizon <select data-horizon="gaze" title="which predicted step it uses: 1 = next frame (33 ms), 20 = 667 ms ahead"></select></label>
+            </div>
+          </div>
+          <div class="src-row">
+            <label class="check"><input type="checkbox" data-source="foveated"> Foveated</label>
+            <div class="opts" id="foveatedOpts">
+              <label class="sub-opt">Fovea <input name="fovea" type="number" min="16" step="16" title="side of the LR square around the gaze upscaled by the SR model"> px</label>
+              <label class="sub-opt">Horizon <select data-horizon="foveated" title="which predicted step it uses: 1 = next frame (33 ms), 20 = 667 ms ahead"></select></label>
+              <label class="check mini"><input type="checkbox" name="fovea_outline"> outline</label>
+              <label class="check mini"><input type="checkbox" name="fovea_gaze"> gaze prediction</label>
+            </div>
+          </div>
+        </fieldset>
+        <label>Start, s <input name="start" type="number" min="0" step="0.5"></label>
+        <label>NDI name <input name="name"></label>
+        <details class="full more">
+          <summary>More</summary>
+          <div class="grid">
+            <label>Batch <input name="batch" type="number" min="1" step="1"></label>
+            <label>Frames <input name="frames" type="number" min="1" step="1" placeholder="all"></label>
+            <label>Device
+              <select name="device"><option value="">auto</option><option>cuda</option><option>mps</option><option>cpu</option></select>
+            </label>
+            <label class="check"><input type="checkbox" name="once"> Play once</label>
+          </div>
+        </details>
+      </form>
+      <p class="note info-text" id="info-stream" hidden>Pick the NDI sources to send: all come from the same decoded frames and are sent in lockstep, frame for frame, so a run goes at the pace of its slowest source (bicubic and gaze are real time; foveated and VSR play in slow motion). Changing these restarts the stream (▶). Models stay loaded between runs.</p>
+      <p class="pending" id="pending" hidden></p>
+      <p class="error" id="error"></p>
+    </section>
+    <section>
+      <div class="card-head"><h2>NDI streams</h2><button class="icon" id="monitor" title="Open NDI Video Monitor" aria-label="Open NDI Video Monitor"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 14h5M8 11.5V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><button class="info" aria-label="About NDI streams" aria-expanded="false" aria-controls="info-ndi"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
+      <ul class="sources" id="ndi"></ul>
+      <p class="empty" id="ndiEmpty">No NDI streams on the network.</p>
+      <p class="note info-text" id="info-ndi" hidden>Sources on the network, refreshed 4×/s. A stream appears about 2 s
+        after it starts and disappears when it stops. This run's own sources are highlighted.
+        The screen button opens NDI Video Monitor on the computer running the stream; pick <span id="sources">the stream</span> in it.</p>
+    </section>
+    <section class="head-card">
+      <div class="card-head"><h2>Head (live)</h2><button class="info" aria-label="About head control" aria-expanded="false" aria-controls="info-head"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
+      <div class="controls">
+        <div class="seg" id="mode">
+          <button data-mode="live">Live</button><button data-mode="trace">Trace</button>
+        </div>
+        <select id="trace" aria-label="Head trace"></select>
+      </div>
+      <div class="pad frame off" id="pad" title="Drag to move the head">
+        <div class="dot head" id="headDot"></div>
+      </div>
+      <div class="row">
+        <span class="stats" id="pose">az 0° · el 0°</span>
+        <button id="centre">Centre</button>
+      </div>
+      <p class="note info-text" id="info-head" hidden>Where the viewer's head points; the gaze model relies mostly on its motion.
+        <b>Live</b> (default): drag the pad (azimuth ±90°, elevation ±45°) or use <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd>
+        (<kbd>Shift</kbd> for bigger steps); either switches the head to Live, and a head nobody moves stays at the centre.
+        <b>Trace</b>: replays a head path from a CSV in <code>Videos/</code>. Changes apply on the next frame.</p>
+    </section>
+  </nav>
+
+  <div class="content">
+    <section class="perf-card">
+      <div class="card-head"><h2>Performance</h2><button class="info" aria-label="About the performance numbers" aria-expanded="false" aria-controls="info-perf"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
+      <div class="perf" id="perf">
+        <div><h3>Stream</h3><dl>
+          <dt>Send rate</dt><dd id="pFps"></dd>
+          <dt>Upscale</dt><dd id="pUp"></dd>
+          <dt>Frame budget</dt><dd><span class="meter"><span id="pBusyBar"></span></span><span id="pBusy"></span></dd>
+          <dt>Late frames</dt><dd id="pLate"></dd>
+        </dl></div>
+        <div><h3>Gaze model</h3><dl>
+          <dt>Predictions</dt><dd id="gRate"></dd>
+          <dt>Model time</dt><dd id="gModel"></dd>
+          <dt>Round trip</dt><dd id="gRt"></dd>
+          <dt>Lag</dt><dd id="gLag"></dd>
+          <dt>Queue · dropped</dt><dd id="gQueue"></dd>
+        </dl></div>
+        <div><h3>Threads &amp; compute <span class="unit">CPU, % of one core</span></h3><dl>
+          <dt>Stream thread</dt><dd id="cStream"></dd>
+          <dt>Gaze thread</dt><dd id="cGaze"></dd>
+          <dt>Stream process</dt><dd id="cProc"></dd>
+          <dt>Model process</dt><dd id="cModel"></dd>
+          <dt>GPU mem, stream</dt><dd id="cMps"></dd>
+          <dt>GPU mem, model</dt><dd id="cMpsModel"></dd>
+          <dt>Peak RAM, stream</dt><dd id="cRss"></dd>
+        </dl></div>
+        <div><h3>Predicted task</h3><dl id="tRows"></dl></div>
+      </div>
+      <p class="note info-text" id="info-perf" hidden><b>Stream</b>: frames sent per second vs the video's rate; upscaling
+        time per frame; frame budget = share of each second spent working rather than waiting for the next frame slot
+        (100% means the stream cannot keep up); late frames = sends that missed their slot.
+        <b>Gaze model</b>: predictions per second (input is 30 Hz); model time in its process; round trip including the
+        pipe; lag = how far the shown prediction is behind the newest frame; queue and drops if it falls behind.
+        <b>Threads &amp; compute</b>: CPU as a share of one core (the stream process includes all its threads; the
+        model runs in its own process). MPS memory is GPU memory per process; GPU utilisation is not available on macOS
+        without root. Updated twice a second.</p>
+    </section>
+    <section class="pipeline-card">
+      <div class="card-head"><h2>Pipeline</h2><button class="info" aria-label="About the pipeline" aria-expanded="false" aria-controls="info-pipeline"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
+      <div class="pipeline-wrap">
+        <svg class="pipeline" id="pipeline" viewBox="0 0 950 342" role="img" aria-label="Stream pipeline">
+          <defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" class="head"/></marker>
+            <marker id="arrowguide" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" class="guide-head"/></marker></defs>
+          <path d="M160 143.0 H188" class="flow " data-src="*" marker-end="url(#arrowhead)"/>
+          <path d="M265.0 120 V31.0 H728" class="flow " data-src="source" marker-end="url(#arrowhead)"/>
+          <path d="M340 143.0 H352 V87.0 H368" class="flow " data-src="vsr" marker-end="url(#arrowhead)"/>
+          <path d="M340 143.0 H368" class="flow " data-src="bicubic gaze foveated" marker-end="url(#arrowhead)"/>
+          <path d="M340 143.0 H352 V255.0 H368" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <path d="M520 87.0 H728" class="flow " data-src="vsr" marker-end="url(#arrowhead)"/>
+          <path d="M520 137.0 H728" class="flow " data-src="bicubic" marker-end="url(#arrowhead)"/>
+          <path d="M520 149.0 H534 V199.0 H728" class="flow " data-src="gaze" marker-end="url(#arrowhead)"/>
+          <text x="724" y="193.0" class="d end" data-src="gaze">+ gaze prediction</text>
+          <path d="M445.0 166 V230" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <text x="451.0" y="203.0" class="d" data-src="foveated">bicubic base</text>
+          <path d="M520 255.0 H728" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <text x="724" y="249.0" class="d end" data-src="fovea_gaze">+ gaze prediction</text>
+          <text x="724" y="270.0" class="d end" data-src="fovea_outline">+ outline</text>
+          <path d="M265.0 166 V286" class="flow " data-src="gaze foveated" marker-end="url(#arrowhead)"/>
+          <text x="271.0" y="244" class="d" data-src="gaze foveated">LR frames</text>
+          <path d="M160 311.0 H188" class="flow " data-src="gaze foveated" marker-end="url(#arrowhead)"/>
+          <path d="M340 311.0 H368" class="flow " data-src="gaze foveated" marker-end="url(#arrowhead)"/>
+          <path d="M520 311.0 H625.0 V201.0" class="flow " data-src="gaze" marker-end="url(#arrowhead)"/>
+          <path d="M520 299.0 H548 V263.0 H522" class="flow guide" data-src="foveated" marker-end="url(#arrowguide)"/>
+          <text x="552" y="291.0" class="d guide-t" data-src="foveated">gaze → fovea</text>
+          <g class="stage " id="pVideo" data-src="*"><rect x="10" y="120" width="150" height="46" rx="8"/><text x="20" y="138" class="t" id="pVideoT">Video</text><text x="20" y="155" class="d" id="pVideoA"></text></g>
+          <g class="stage " id="pDecode" data-src="*"><rect x="190" y="120" width="150" height="46" rx="8"/><text x="200" y="138" class="t" id="pDecodeT">Decode</text><text x="200" y="155" class="d" id="pDecodeA"></text></g>
+          <g class="stage " id="pVsr" data-src="vsr"><rect x="370" y="64" width="150" height="46" rx="8"/><text x="380" y="82" class="t" id="pVsrT">VSR ×4</text><text x="380" y="99" class="d" id="pVsrA"></text></g>
+          <g class="stage " id="pBicubic" data-src="bicubic gaze foveated"><rect x="370" y="120" width="150" height="46" rx="8"/><text x="380" y="138" class="t" id="pBicubicT">Bicubic ×4</text><text x="380" y="155" class="d" id="pBicubicA"></text></g>
+          <g class="stage " id="pFoveated" data-src="foveated"><rect x="370" y="232" width="150" height="46" rx="8"/><text x="380" y="250" class="t" id="pFoveatedT">Foveated ×4</text><text x="380" y="267" class="d" id="pFoveatedA"></text></g>
+          <g class="stage " id="pHead" data-src="gaze foveated"><rect x="10" y="288" width="150" height="46" rx="8"/><text x="20" y="306" class="t" id="pHeadT">Head pose</text><text x="20" y="323" class="d" id="pHeadA"></text></g>
+          <g class="stage " id="pSample" data-src="gaze foveated"><rect x="190" y="288" width="150" height="46" rx="8"/><text x="200" y="306" class="t" id="pSampleT">Samples</text><text x="200" y="323" class="d" id="pSampleA"></text></g>
+          <g class="stage " id="pModel" data-src="gaze foveated"><rect x="370" y="288" width="150" height="46" rx="8"/><text x="380" y="306" class="t" id="pModelT">Gaze model</text><text x="380" y="323" class="d" id="pModelA"></text></g>
+          <g class="stage out" id="pNdi_source" data-src="source"><rect x="730" y="8" width="210" height="46" rx="8"/><text x="740" y="26" class="t" id="pNdi_sourceT"></text><text x="740" y="43" class="d" id="pNdi_sourceA"></text></g>
+          <g class="stage out" id="pNdi_vsr" data-src="vsr"><rect x="730" y="64" width="210" height="46" rx="8"/><text x="740" y="82" class="t" id="pNdi_vsrT"></text><text x="740" y="99" class="d" id="pNdi_vsrA"></text></g>
+          <g class="stage out" id="pNdi_bicubic" data-src="bicubic"><rect x="730" y="120" width="210" height="46" rx="8"/><text x="740" y="138" class="t" id="pNdi_bicubicT"></text><text x="740" y="155" class="d" id="pNdi_bicubicA"></text></g>
+          <g class="stage out" id="pNdi_gaze" data-src="gaze"><rect x="730" y="176" width="210" height="46" rx="8"/><text x="740" y="194" class="t" id="pNdi_gazeT"></text><text x="740" y="211" class="d" id="pNdi_gazeA"></text></g>
+          <g class="stage out" id="pNdi_foveated" data-src="foveated"><rect x="730" y="232" width="210" height="46" rx="8"/><text x="740" y="250" class="t" id="pNdi_foveatedT"></text><text x="740" y="267" class="d" id="pNdi_foveatedA"></text></g>
+        </svg>
+      </div>
+      <p class="note info-text" id="info-pipeline" hidden>How a frame moves through the stream, with live values. Every NDI source comes from the
+        same decoded frames: Source sends them as they are; Bicubic upscales 4×; Gaze draws the gaze prediction (at its horizon) on
+        the bicubic frame; Foveated runs the SR model around the predicted gaze (blue arrow) on top of bicubic, and can add
+        the gaze prediction and the fovea outline; VSR runs
+        the SR model on the whole frame. The gaze model runs in its own process on 30 Hz samples of the decoded frames
+        and the head pose. Parts that no enabled source uses are greyed out.</p>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const form = $("opts");
+const AZ_RANGE = 90, EL_RANGE = 45;
+let pose = { az: 0, el: 0 }, poseDirty = false, sending = false, headMode = "live";
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function showError(msg) { $("error").textContent = msg || ""; }
+
+// NDI source keys and labels, as in stream/control.py SOURCES
+const SOURCES = { source: "Source", vsr: "VSR", bicubic: "Bicubic", gaze: "Gaze", foveated: "Foveated" };
+const sourceBoxes = () => [...document.querySelectorAll("input[data-source]")];
+function syncForm() {  // per-source settings show next to their source when it is ticked
+  const on = (k) => sourceBoxes().find((b) => b.dataset.source === k).checked;
+  $("gazeOpts").hidden = !on("gaze");
+  $("foveatedOpts").hidden = !on("foveated");
+  $("vsrOpts").hidden = !on("vsr");
+}
+
+function fillOptions(o, videos, traces) {
+  $("video").innerHTML = videos.map((v) => `<option>${v}</option>`).join("");
+  $("trace").innerHTML = traces.length ? traces.map((t) => `<option>${t}</option>`).join("")
+                                        : "<option value=''>no CSV in Videos/</option>";
+  for (const el of form.elements) {
+    if (!(el.name in o)) continue;
+    if (el.type === "checkbox") el.checked = !!o[el.name];
+    else el.value = o[el.name] ?? "";
+  }
+  sourceBoxes().forEach((b) => (b.checked = (o.sources || []).includes(b.dataset.source)));
+  syncForm();
+}
+
+function readOptions() {
+  const o = {};
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    o[el.name] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  o.sources = sourceBoxes().filter((b) => b.checked).map((b) => b.dataset.source);
+  return o;
+}
+
+function setMode(mode, live) {
+  headMode = mode;
+  document.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  $("pad").classList.toggle("off", mode !== "live");
+  $("trace").disabled = mode !== "trace";
+  if (live) $("pose").textContent = `az ${pose.az.toFixed(0)}° · el ${pose.el.toFixed(0)}°`;
+}
+
+async function applyMode(mode) {
+  const body = { head_mode: mode };
+  if (mode === "trace") body.head_trace = $("trace").value || null;
+  try { await api("/api/live", body); setMode(mode); showError(); }
+  catch (e) { showError(e.message); }
+}
+
+// --- Head pose: pad and keys; sent at most ~30x/s, one request at a time ---
+function setPose(az, el) {
+  pose.az = Math.max(-AZ_RANGE, Math.min(AZ_RANGE, az));
+  pose.el = Math.max(-EL_RANGE, Math.min(EL_RANGE, el));
+  $("headDot").style.left = `${50 + pose.az / AZ_RANGE * 50}%`;
+  $("headDot").style.top = `${50 - pose.el / EL_RANGE * 50}%`;
+  $("pose").textContent = `az ${pose.az.toFixed(0)}° · el ${pose.el.toFixed(0)}°`;
+  poseDirty = true;
+  if (headMode !== "live") applyMode("live");
+}
+
+setInterval(async () => {
+  if (!poseDirty || sending) return;
+  poseDirty = false; sending = true;
+  try { await api("/api/head", { azimuth: pose.az, elevation: pose.el }); }
+  catch (e) { showError(e.message); }
+  finally { sending = false; }
+}, 33);
+
+const pad = $("pad");
+function padMove(e) {
+  const r = pad.getBoundingClientRect();
+  setPose(((e.clientX - r.left) / r.width * 2 - 1) * AZ_RANGE, (1 - (e.clientY - r.top) / r.height * 2) * EL_RANGE);
+}
+pad.addEventListener("pointerdown", (e) => { pad.setPointerCapture(e.pointerId); padMove(e); });
+pad.addEventListener("pointermove", (e) => { if (pad.hasPointerCapture(e.pointerId)) padMove(e); });
+
+document.addEventListener("keydown", (e) => {
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+  const d = e.shiftKey ? 10 : 3;
+  const moves = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, d], ArrowDown: [0, -d] };
+  if (!moves[e.key]) return;
+  e.preventDefault();
+  setPose(pose.az + moves[e.key][0], pose.el + moves[e.key][1]);
+});
+
+$("centre").onclick = () => setPose(0, 0);
+
+// --- Info icons: one explanation open at a time; Escape or a click elsewhere closes it ---
+function closeInfo(except) {
+  document.querySelectorAll("button.info").forEach((b) => {
+    if (b === except) return;
+    b.setAttribute("aria-expanded", "false");
+    $(b.getAttribute("aria-controls")).hidden = true;
+  });
+}
+document.querySelectorAll("button.info").forEach((b) => (b.onclick = (e) => {
+  e.stopPropagation();
+  closeInfo(b);
+  const open = b.getAttribute("aria-expanded") !== "true";
+  b.setAttribute("aria-expanded", String(open));
+  $(b.getAttribute("aria-controls")).hidden = !open;
+}));
+document.addEventListener("click", (e) => { if (!e.target.closest(".info-text")) closeInfo(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeInfo(); });
+
+// --- Stream controls ---
+$("start").onclick = async () => {
+  try { showError(); await api("/api/start", { options: readOptions() }); }
+  catch (e) { showError(e.message); }
+};
+$("stop").onclick = async () => { try { await api("/api/stop", {}); } catch (e) { showError(e.message); } };
+$("monitor").onclick = async () => { try { showError(); await api("/api/monitor", {}); } catch (e) { showError(e.message); } };
+function showSources() {
+  const name = form.elements.name.value || "StreamNDI";
+  const names = sourceBoxes().filter((b) => b.checked).map((b) => `${name}-${SOURCES[b.dataset.source]}`);
+  $("sources").textContent = names.length ? names.join(", ") : "a stream";
+}
+// --- Pending changes: the form differs from the options the running stream started with ---
+let runningOptions = null;  // set from the status while a stream runs
+const OPTION_LABELS = { video: "video", fovea: "fovea", fovea_outline: "fovea outline", fovea_gaze: "gaze prediction", k: "k", batch: "batch",
+  start: "start", frames: "frames", device: "device", name: "NDI name", once: "play once" };
+function sameValue(a, b) {
+  const norm = (v) => (v === null || v === undefined || v === "" ? "" : typeof v === "boolean" ? String(v) : String(Number(v) || v));
+  return norm(a) === norm(b);
+}
+function showPending() {
+  const changes = [];
+  if (runningOptions) {
+    const now = readOptions(), was = new Set(runningOptions.sources || []), want = new Set(now.sources);
+    const added = [...want].filter((k) => !was.has(k)).map((k) => `+${SOURCES[k]}`);
+    const removed = [...was].filter((k) => !want.has(k)).map((k) => `−${SOURCES[k]}`);
+    if (added.length || removed.length) changes.push(`sources ${[...added, ...removed].join(", ")}`);
+    for (const [key, label] of Object.entries(OPTION_LABELS)) {
+      if (!sameValue(now[key], runningOptions[key])) {
+        const v = (x) => (x === "" || x === null || x === undefined ? "–" : typeof x === "boolean" ? (x ? "on" : "off") : x);
+        changes.push(`${label} ${v(runningOptions[key])} → ${v(now[key])}`);
+      }
+    }
+  }
+  $("pending").hidden = !changes.length;
+  $("pending").textContent = changes.length ? `Changed: ${changes.join(" · ")}. Press ▶ to restart with them.` : "";
+  $("start").classList.toggle("pending", changes.length > 0);
+  $("start").title = changes.length ? "Restart with the changed options" : "Start (restarts with these options)";
+}
+form.addEventListener("input", () => { syncForm(); showSources(); showPending(); });
+
+// --- Horizons: which predicted step each gaze-using source uses (live, no restart) ---
+const stepLabel = (n) => `${n} · ${Math.round(n * 1000 / 30)} ms`;
+document.querySelectorAll("select[data-horizon]").forEach((sel) => {
+  for (let n = 1; n <= 20; n++) sel.add(new Option(stepLabel(n), n));
+  sel.onchange = async () => {
+    try { await api("/api/live", { horizon: { [sel.dataset.horizon]: Number(sel.value) } }); }
+    catch (e) { showError(e.message); }
+  };
+});
+document.querySelectorAll("#mode button").forEach((b) => (b.onclick = () => applyMode(b.dataset.mode)));
+$("trace").onchange = () => { if (headMode === "trace") applyMode("trace"); };
+
+// --- NDI streams on the network; this run's own sources are highlighted ---
+function showNdi(sources, s) {
+  const running = ["loading", "streaming"].includes(s.state) && s.options;
+  const ours = {};
+  if (running) {
+    for (const [key, name] of Object.entries(s.options.source_names || {})) ours[name] = SOURCES[key].toLowerCase();
+  }
+  // this run's sources first, in source order; then everything else as found
+  const rank = (src) => {
+    const key = Object.keys(ours).indexOf(src.stream);
+    return src.local && key >= 0 ? key : 1000;
+  };
+  sources = [...sources].sort((a, b) => rank(a) - rank(b));
+  const list = $("ndi");
+  list.replaceChildren(...sources.map((src) => {
+    const li = document.createElement("li");
+    const badge = src.local && ours[src.stream];
+    if (badge) li.className = "ours";
+    const dot = document.createElement("span"); dot.className = "live";
+    const name = document.createElement("span"); name.className = "stream"; name.textContent = src.stream;
+    const host = document.createElement("span"); host.className = "host";
+    host.textContent = src.local ? `${src.host} (this computer)` : src.host;
+    li.append(dot, name, host);
+    if (badge) { const b = document.createElement("span"); b.className = "badge"; b.textContent = badge; li.append(b); }
+    return li;
+  }));
+  $("ndiEmpty").hidden = sources.length > 0;
+}
+
+// --- Predicted path: all 20 steps (u, v in [0, 1]), step 1 first ---
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+const TASKS = ["Free viewing", "Visual search", "Saliency", "Tracking"];
+const deg = (x) => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(1)}°`;
+
+// --- Pipeline card: live values in each stage ---
+// Stage boxes are 150 units wide: cut long values (e.g. file names) and keep the full text as a tooltip.
+const STAGE_CHARS = 23;
+function setText(id, text) {
+  const el = $(id), full = text || "";
+  el.textContent = full.length > STAGE_CHARS ? `${full.slice(0, STAGE_CHARS - 1)}…` : full;
+  let tip = el.querySelector("title");
+  if (full.length > STAGE_CHARS) {
+    if (!tip) { tip = document.createElementNS(SVG_NS, "title"); el.prepend(tip); }
+    tip.textContent = full;
+  } else if (tip) tip.remove();
+}
+function showPipeline(st) {
+  const s = st.status, running = ["loading", "streaming"].includes(s.state);
+  const o = (running && s.options) || readOptions();
+  const on = new Set(o.sources || []), hz = st.live.horizons;
+  // Overlays on the foveated source count as parts of the pipeline too.
+  if (on.has("foveated") && o.fovea_gaze) on.add("fovea_gaze");
+  if (on.has("foveated") && o.fovea_outline) on.add("fovea_outline");
+  const p = s.perf || {}, ps = p.stream || {}, g = p.gaze, info = s.gaze_info, ups = ps.upscale_ms || {};
+  // grey out what no enabled source uses ("*" = always on)
+  document.querySelectorAll("#pipeline [data-src]").forEach((el) => {
+    const owners = el.dataset.src.split(" ");
+    el.classList.toggle("off", !owners.includes("*") && !owners.some((k) => on.has(k)));
+  });
+  const lr = s.lr_size, hr = s.size, live = running ? s.state === "streaming" : false;
+  const ms = (k, d = 1) => (live && ups[k] !== undefined && ups[k] !== null ? `${ups[k].toFixed(d)} ms/frame` : "");
+  // resolution and frame rate of the selected (or running) video, probed by the server
+  const vi = (st.video_info || {})[o.video];
+  setText("pVideoA", vi ? `${vi[0]}×${vi[1]} · ${+vi[2].toFixed(2)} fps` : "–");
+  setText("pDecodeA", "ffmpeg → RGB frames");
+  setText("pBicubicA", ms("bicubic") || "plain interpolation");
+  setText("pFoveatedA", `SR ${o.fovea} px at ${stepLabel(hz.foveated)}${ms("foveated", 0) ? " · " + ms("foveated", 0) : ""}`);
+  setText("pVsrA", `k = ${o.k}${ms("vsr", 0) ? " · " + ms("vsr", 0) : ""}`);
+  setText("pHeadA", st.live.head_mode === "trace" ? `trace: ${st.live.head_trace || "–"}` :
+    (s.head && live ? `live: az ${deg(s.head[0])}, el ${deg(s.head[1])}` : "live (page)"));
+  setText("pSampleA", "15 frames + head → model");
+  setText("pModelA", live && g && g.model_ms !== null && g.model_ms !== undefined ?
+    `${g.model_ms.toFixed(0)} ms · lag ${g.lag_ms === null ? "–" : g.lag_ms.toFixed(0) + " ms"}` :
+    "own process, UniSal + LSTM");
+  // fps chips: the rate each step could reach from its time per frame. Decode has none: ffmpeg
+  // decodes ahead in its own process, and the run's actual pace is on the NDI chips.
+  const vf = ps.video_fps, rate = (msv) => (live && msv ? 1000 / msv : null);
+  const gazeUsed = on.has("gaze") || on.has("foveated");
+  setChip("pBicubic", on.has("bicubic") || on.has("gaze") || on.has("foveated") ? rate(ups.bicubic) : null, vf);
+  setChip("pFoveated", on.has("foveated") ? rate(ups.foveated) : null, vf);
+  setChip("pVsr", on.has("vsr") ? rate(ups.vsr) : null, vf);
+  setChip("pSample", gazeUsed ? 30 : null, 30, false, true);  // the model's input rate, fixed by its training
+  setChip("pModel", live && g ? rate(g.model_ms) : null, 30);  // must keep up with the 30 fps samples
+  const name = o.name || "StreamNDI";
+  for (const [k, label] of Object.entries(SOURCES)) {
+    setText(`pNdi_${k}T`, `${name}-${label}`);
+    const size = k === "source" ? lr : hr;
+    setText(`pNdi_${k}A`, !on.has(k) ? "off" : live && size ? `${size[0]}×${size[1]}` :
+      k === "gaze" ? `horizon ${stepLabel(hz.gaze)}` : "not streaming");
+    // send rate as a chip next to the NDI name (the NDI boxes are wider to fit both)
+    setChip(`pNdi_${k}`, on.has(k) && live && ps.fps !== undefined ? ps.fps : null, vf);
+  }
+}
+
+// fps chip in the top-right corner of a pipeline box (created on first use; hidden without a value)
+function setChip(boxId, fps, videoFps, bottom = false, fixed = false) {
+  const box = $(boxId), rect = box.querySelector("rect");
+  let chip = box.querySelector(".chip");
+  if (!chip) {
+    chip = document.createElementNS(SVG_NS, "g");
+    chip.setAttribute("class", "chip");
+    chip.append(document.createElementNS(SVG_NS, "rect"), document.createElementNS(SVG_NS, "text"));
+    box.append(chip);
+  }
+  if (fps === null || fps === undefined || !isFinite(fps)) { chip.style.display = "none"; return; }
+  chip.style.display = "";
+  const label = `${fps >= 100 ? Math.round(fps) : fps >= 10 ? fps.toFixed(0) : fps.toFixed(1)} fps`;
+  const w = 8 + label.length * 5.6, h = 15;
+  const x = Number(rect.getAttribute("x")) + Number(rect.getAttribute("width")) - w - 6;
+  const y = Number(rect.getAttribute("y")) + (bottom ? 25 : 5);
+  const [r, t] = chip.children;
+  Object.entries({ x, y, width: w, height: h, rx: 7.5 }).forEach(([k, v]) => r.setAttribute(k, v));
+  Object.entries({ x: x + w / 2, y: y + 11 }).forEach(([k, v]) => t.setAttribute(k, v));
+  t.textContent = label;
+  chip.classList.toggle("slow", !fixed && videoFps !== undefined && fps < videoFps * 0.95);
+  chip.classList.toggle("fixed", fixed);
+}
+
+// --- Performance card ---
+const fmt = (x, d = 1, unit = "") => (x === null || x === undefined ? "–" : `${x.toFixed(d)}${unit}`);
+const core = (x) => (x === null || x === undefined ? "–" : `${Math.round(x * 100)}%`);
+function showPerf(s) {
+  const p = s.perf || {}, st = p.stream || {}, g = p.gaze, c = p.compute || {};
+  $("pFps").textContent = st.fps === undefined ? "–" : `${st.fps.toFixed(1)} / ${st.video_fps.toFixed(0)} fps`;
+  const ups = st.upscale_ms || {};
+  // one line per upscaler, so several do not run into the label
+  $("pUp").replaceChildren(...(Object.keys(ups).length ? Object.entries(ups) : [["", null]]).map(([k, v]) => {
+    const line = document.createElement("span");
+    line.textContent = k ? `${SOURCES[k].toLowerCase()} ${fmt(v, v !== null && v >= 100 ? 0 : 1, " ms")}` : "–";
+    return line;
+  }));
+  const busy = st.busy;
+  $("pBusy").textContent = busy === undefined ? "–" : `${Math.round(busy * 100)}%`;
+  $("pBusyBar").style.width = busy === undefined ? "0" : `${Math.min(100, busy * 100)}%`;
+  $("pBusyBar").parentElement.classList.toggle("hot", busy > 0.95);
+  $("pLate").textContent = st.late === undefined ? "–" : String(st.late);
+  $("gRate").textContent = g ? fmt(g.rate, 1, " /s") : "off";
+  $("gModel").textContent = g ? fmt(g.model_ms, 1, " ms") : "–";
+  $("gRt").textContent = g ? fmt(g.roundtrip_ms, 1, " ms") : "–";
+  $("gLag").textContent = g ? fmt(g.lag_ms, 0, " ms") : "–";
+  $("gQueue").textContent = g ? `${g.queued} · ${g.dropped}` : "–";
+  $("cStream").textContent = core(c.stream_thread);
+  $("cGaze").textContent = core(c.gaze_thread);
+  $("cProc").textContent = core(c.process);
+  $("cModel").textContent = core(c.model_process);
+  $("cMps").textContent = c.mps_mb === undefined ? "–" : fmt(c.mps_mb, 0, " MB");
+  $("cMpsModel").textContent = c.model_mps_mb === undefined ? "–" : fmt(c.model_mps_mb, 0, " MB");
+  $("cRss").textContent = c.rss_mb === undefined ? "–" : `${fmt(c.rss_mb / 1000, 2)} GB`;
+  // one row per task, most likely first (highlighted)
+  const probs = s.gaze_info && s.gaze_info.task_probs;
+  const order = TASKS.map((_, k) => k);
+  if (probs) order.sort((a, b) => probs[b] - probs[a]);
+  $("tRows").replaceChildren(...order.flatMap((k, rank) => {
+    const dt = document.createElement("dt"), dd = document.createElement("dd");
+    dt.textContent = TASKS[k];
+    dd.textContent = probs ? `${Math.round(probs[k] * 100)}%` : "–";
+    if (probs && rank === 0) { dt.className = "top"; dd.className = "top"; }
+    return [dt, dd];
+  }));
+}
+
+// --- Status, polled 4x/s ---
+async function poll() {
+  try {
+    const st = await api("/api/state"), s = st.status;
+    $("state").textContent = s.state;
+    $("state").className = `pill ${s.state}`;
+    $("stats").textContent = s.state === "idle" ? "" :
+      `${s.sent} frames · ${s.fps.toFixed(1)} fps` + (s.size ? ` · ${s.size[0]}×${s.size[1]}` : "");
+    if (s.size) document.documentElement.style.setProperty("--frame-aspect", `${s.size[0]} / ${s.size[1]}`);
+    showPerf(s);
+    showPipeline(st);
+    runningOptions = ["loading", "streaming"].includes(s.state) ? s.options : null;
+    showPending();
+    if (headMode !== "live" && s.head && s.state === "streaming") {  // show the trace's head pose on the pad
+      $("headDot").style.left = `${50 + Math.max(-1, Math.min(1, s.head[0] / AZ_RANGE)) * 50}%`;
+      $("headDot").style.top = `${50 - Math.max(-1, Math.min(1, s.head[1] / EL_RANGE)) * 50}%`;
+      $("pose").textContent = `az ${s.head[0].toFixed(0)}° · el ${s.head[1].toFixed(0)}°`;
+    }
+    if (s.state === "error") showError(s.error);
+    showNdi(st.ndi, s);
+  } catch (e) { $("state").textContent = "offline"; $("state").className = "pill error"; }
+}
+
+(async () => {
+  const st = await api("/api/state");
+  fillOptions(st.options, st.videos, st.traces);
+  showSources();
+  document.querySelectorAll("select[data-horizon]").forEach((sel) => (sel.value = st.live.horizons[sel.dataset.horizon]));
+  if (st.live.head_trace) $("trace").value = st.live.head_trace;
+  [pose.az, pose.el] = st.live.head_pose;
+  $("headDot").style.left = `${50 + pose.az / AZ_RANGE * 50}%`;
+  $("headDot").style.top = `${50 - pose.el / EL_RANGE * 50}%`;
+  setMode(st.live.head_mode, true);
+  poll(); setInterval(poll, 250);
+})();
+</script>
+</body>
+</html>
