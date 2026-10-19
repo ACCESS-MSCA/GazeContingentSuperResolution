@@ -10,7 +10,8 @@ import threading
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from gaze.tracker import MODEL_HZ, HeadTrace, LiveHead
+from gaze.spec import FUTURE, MODEL_HZ
+from gaze.tracker import HeadTrace, LiveHead
 
 ROOT = Path(__file__).resolve().parent.parent
 VIDEOS = ROOT / "Videos"
@@ -117,11 +118,11 @@ class StreamOptions:
 
 
 def stretch_horizon(k, fps):
-    """The foveated source's horizon: the gaze step (1-20, at MODEL_HZ) at the end of a stretch of
+    """The foveated source's horizon: the gaze step (1-FUTURE, at MODEL_HZ) at the end of a stretch of
     k video frames at `fps`, rounded up, so the predicted gaze that places the crop (and the ring)
     is where the gaze will be when the stretch's last frame is shown (k = 1 -> step 1, the next
     sample; k = 3 at 60 fps -> step 2, 67 ms)."""
-    return min(20, max(1, math.ceil(k * MODEL_HZ / float(fps))))
+    return min(FUTURE, max(1, math.ceil(k * MODEL_HZ / float(fps))))
 
 
 def normalize_sources(sources):

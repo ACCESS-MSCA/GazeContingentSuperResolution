@@ -8,11 +8,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from upscale import SCALE
 from upscale.vsr import frames as frame_io
 
 
 class BicubicStream:
-    def __init__(self, scale: int = 4, device: str = "cpu"):
+    def __init__(self, scale: int = SCALE, device: str = "cpu"):
         self.scale = scale
         self.device = torch.device(device)
 

@@ -29,10 +29,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from upscale import SCALE
 from upscale.bicubic import BicubicStream
 from upscale.vsr import frames as frame_io
 
-SCALE = 4
 # Share of the fovea's radius over which SR fades into bicubic.
 FEATHER = 0.35
 # Low-pass for the colour match: downsample by this factor (area) and back up (bilinear).

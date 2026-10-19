@@ -18,6 +18,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from gaze.spec import FUTURE, MODEL_HZ
 from ndi.discovery import is_local_host
 from ndi.monitor import open_monitor
 from stream.control import VIDEOS, StreamOptions, list_files
@@ -91,6 +92,8 @@ def make_server(controller, options, host="127.0.0.1", port=8000, monitor=open_m
                     "videos": list_files(VIDEOS, *VIDEO_SUFFIXES),
                     "video_info": {v: video_info(v) for v in list_files(VIDEOS, *VIDEO_SUFFIXES)},
                     "traces": list_files(VIDEOS, ".csv"),
+                    # the gaze model's fixed rate and number of predicted steps (gaze/spec.py)
+                    "gaze_model": {"hz": MODEL_HZ, "steps": FUTURE},
                     "ndi": ndi_sources(),
                 })
             else:

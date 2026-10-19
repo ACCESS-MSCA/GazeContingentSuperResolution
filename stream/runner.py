@@ -12,12 +12,13 @@ from collections import deque
 import numpy as np
 import torch
 
+from gaze.spec import FUTURE, MODEL_HZ
 from stream.control import CROPPED_SOURCES, SOURCES, LiveSettings, StreamStatus, stretch_horizon
+from upscale import SCALE
 from stream.ffmpeg import decode_audio_to_array, probe_video, read_rgb_frames
 from stream.perf import Rates, mps_mb, peak_rss_mb
 
 # Fixed by the SR model: every output frame is 4x the input in each dimension.
-SCALE = 4
 
 
 def default_device() -> str:
@@ -36,6 +37,8 @@ def _vsr_pipeline(cache, device, k):
     from upscale.vsr import VSRPipeline
 
     pipeline = _cached(cache, ("vsr", device), lambda: VSRPipeline(k=1, device=device))
+    if getattr(pipeline, "scale_factor", SCALE) != SCALE:
+        raise ValueError(f"the SR model upscales {pipeline.scale_factor}x, but the stream is set up for {SCALE}x (upscale.SCALE)")
     if k > 1:
         pipeline.load_interpolation()
     return pipeline
@@ -134,7 +137,7 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         predictor = _cached(cache, ("gaze", device), lambda: ProcessPredictor(device=device))
         head_source = live.head_source
         # The tracker's own step does not matter here: the source picks its step from the full path.
-        tracker = ThreadedGazeTracker(fps, head_source, step=20, start=opts.start, predictor=predictor)
+        tracker = ThreadedGazeTracker(fps, head_source, step=FUTURE, start=opts.start, predictor=predictor)
         fov_h = stretch_horizon(opts.fovea_k, fps)
         print(f"Gaze    : head {live.head_mode}, foveated horizon {fov_h} (k={opts.fovea_k})")
 
@@ -222,7 +225,7 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
             "gaze": None if not tracker else {
                 "rate": r.get("predictions"), "model_ms": ms_per("model_s", "predictions"),
                 "roundtrip_ms": ms_per("roundtrip_s", "predictions"),
-                "lag_ms": None if lag is None else lag * 1000 / 30, "queued": g["queued"], "dropped": g["dropped"]},
+                "lag_ms": None if lag is None else lag * 1000 / MODEL_HZ, "queued": g["queued"], "dropped": g["dropped"]},
             # CPU: seconds of CPU per second (1.0 = one core); the process figure includes all its threads
             "compute": {"stream_thread": r["stream_cpu_s"], "gaze_thread": r.get("worker_cpu_s"),
                         "process": r["process_cpu_s"], "model_process": r.get("child_cpu_s"),

@@ -74,6 +74,7 @@ def test_page_and_state(server):
     assert state["videos"] == ["clip.mp4"] and state["traces"] == ["head.csv"]
     assert state["options"]["video"] == "clip.mp4"
     assert state["live"]["head_mode"] == "live" and state["status"]["state"] == "idle"
+    assert state["gaze_model"] == {"hz": 30, "steps": 20}  # gaze/spec.py, for the page
     assert StreamOptions().sources == ["source"] and StreamOptions().gaze is False
     assert StreamOptions().fovea_outline is True
     assert StreamOptions().fovea_gaze is True

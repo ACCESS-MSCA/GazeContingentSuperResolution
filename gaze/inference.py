@@ -34,9 +34,8 @@ WEIGHTS = os.path.join(HERE, "weights")
 MODEL_PATH = os.path.join(WEIGHTS, "behaviour_aware_lambda20_seed0.pth")  # config: same name, .json
 SAL_PATH = os.path.join(WEIGHTS, "unisal.pth")
 
-FPS = 30
-PAST = 15     # input frames (500 ms at 30 Hz)
-FUTURE = 20   # predicted frames (666 ms)
+from .spec import FUTURE, PAST  # noqa: F401 -- 15 input frames (500 ms), 20 predicted (666 ms); FUTURE re-exported as gaze.FUTURE
+from .spec import MODEL_HZ as FPS  # 30 Hz
 TASK_NAMES = ["Free Viewing", "Visual Search", "Saliency", "Track"]
 # Prediction horizon (steps) per predicted task, selected on validation data with a 10° tolerance (seed 0).
 TASK_HORIZONS = [13, 15, 10, 20]

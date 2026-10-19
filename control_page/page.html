@@ -526,7 +526,9 @@ $("vsrCropClear").onclick = () => {  // back to the whole frame
   formChanged();
 };
 
-const stepLabel = (n) => `${n} · ${Math.round(n * 1000 / 30)} ms`;  // a predicted gaze step (30 Hz)
+// The gaze model's rate and number of predicted steps, from the server (gaze/spec.py)
+let GAZE_MODEL = { hz: 30, steps: 20 };
+const stepLabel = (n) => `${n} · ${Math.round(n * 1000 / GAZE_MODEL.hz)} ms`;  // a predicted gaze step
 document.querySelectorAll("#mode button").forEach((b) => (b.onclick = () => applyMode(b.dataset.mode)));
 $("trace").onchange = () => { if (headMode === "trace") applyMode("trace"); };
 
@@ -581,7 +583,7 @@ function setText(id, text, max = STAGE_CHARS) {  // max: more for a wider box
 // gaze step (30 Hz) at the end of a stretch of k video frames, so the crop is placed where the gaze will be.
 function fovHorizon(o, st) {
   const k = +o.fovea_k || 1, vi = (st.video_info || {})[o.video], fps = vi ? vi[2] : 60;
-  return Math.min(20, Math.max(1, Math.ceil(k * 30 / fps)));
+  return Math.min(GAZE_MODEL.steps, Math.max(1, Math.ceil(k * GAZE_MODEL.hz / fps)));
 }
 function showPipeline(st) {
   const s = st.status, running = ["loading", "streaming"].includes(s.state);
@@ -748,6 +750,7 @@ async function poll() {
 
 (async () => {
   const st = await api("/api/state");
+  GAZE_MODEL = st.gaze_model || GAZE_MODEL;
   fillOptions(st.options, st.videos, st.traces);
   showSources();
   if (st.live.head_trace) $("trace").value = st.live.head_trace;

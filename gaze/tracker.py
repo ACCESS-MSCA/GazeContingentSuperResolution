@@ -16,10 +16,10 @@ import time
 
 import numpy as np
 
+from .spec import FUTURE, MODEL_HZ  # the model's rate and number of predicted steps
+
 # Field of view of the headset the gaze model was trained with (HTC Vive, EHTask), degrees.
 DEFAULT_FOV = (108.77, 111.53)
-
-MODEL_HZ = 30
 
 
 class HeadTrace:
@@ -91,8 +91,8 @@ class GazeTracker:
     """
 
     def __init__(self, fps, trace=None, step=1, fov=DEFAULT_FOV, start=0.0, device=None, predictor=None):
-        if not 1 <= step <= 20:
-            raise ValueError(f"step must be between 1 and 20, got {step}")
+        if not 1 <= step <= FUTURE:
+            raise ValueError(f"step must be between 1 and {FUTURE}, got {step}")
         if predictor is None:
             from gaze.inference import GazePredictor  # loads UniSal + the gaze model
 
