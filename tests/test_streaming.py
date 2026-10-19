@@ -103,6 +103,19 @@ def test_counters_track_progress():
     assert total == 9
 
 
+
+def test_stage_timers_count_keyframes_and_interpolated_frames():
+    stream = VSRStream(_build(3))
+    clip = _ramp_clip(9)
+    for start in range(0, 9, 2):
+        stream.push(clip[start : start + 2])
+    stream.flush()
+    plan = plan_schedule(num_frames=9, k=3)
+    assert stream.sr_frames == len(plan.keyframes)
+    assert stream.rife_frames == plan.num_interpolated
+    assert stream.sr_s > 0 and stream.rife_s > 0
+
+
 def test_reset_clears_carryover_between_clips():
     pipeline = _build(2)
     stream = VSRStream(pipeline)

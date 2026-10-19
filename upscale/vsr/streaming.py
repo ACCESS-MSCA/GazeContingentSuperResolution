@@ -17,6 +17,7 @@ Frames come out in order, and pushes plus the flush yield exactly as many
 frames as went in.
 """
 
+import time
 from itertools import pairwise
 
 import numpy as np
@@ -49,6 +50,10 @@ class VSRStream:
                 f"k={self.k} requires the interpolation model, but the pipeline was "
                 f"built with k=1. Rebuild it with k>1."
             )
+        # Time spent in each stage and the frames it produced, cumulative over the
+        # stream's life (not cleared by reset()), for per-stage performance figures.
+        self.sr_s = self.rife_s = 0.0
+        self.sr_frames = self.rife_frames = 0
         self.reset()
 
     def reset(self) -> None:
@@ -124,9 +129,13 @@ class VSRStream:
             return []  # no keyframe yet -- keep buffering
 
         keyframe_indices = [self._pending[p][0] for p in anchor_positions]
+        start = time.perf_counter()
         produced = self.pipeline.run_sr(
             torch.cat([self._pending[p][1] for p in anchor_positions])
         )
+        self._sync()
+        self.sr_s += time.perf_counter() - start
+        self.sr_frames += len(produced)
         hr = dict(zip(keyframe_indices, produced))
 
         anchors = list(keyframe_indices)
@@ -141,7 +150,11 @@ class VSRStream:
             if gap is not None
         ]
         if gaps:
+            start = time.perf_counter()
             self.pipeline.fill_gaps(hr, gaps)
+            self._sync()
+            self.rife_s += time.perf_counter() - start
+            self.rife_frames += sum(len(gap.targets) for gap in gaps)
 
         # The previous keyframe was emitted on an earlier call; start after it.
         first = anchors[0] + 1 if self._previous_keyframe is not None else anchors[0]
@@ -153,3 +166,11 @@ class VSRStream:
         self._pending = self._pending[last_position + 1 :]
 
         return emitted
+
+    def _sync(self) -> None:
+        """Waits for queued GPU work, so each stage's time is its own."""
+        device = self.pipeline.device
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elif device.type == "mps":
+            torch.mps.synchronize()

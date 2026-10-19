@@ -7,7 +7,7 @@ A stdlib ThreadingHTTPServer serving one HTML page and a small JSON API:
                         NDI sources on the network
     POST /api/start     {options}: (re)starts the stream with these StreamOptions
     POST /api/stop      stops the stream
-    POST /api/live      {horizon?: {source: step}, head_mode?, head_trace?}: applied on the next frame
+    POST /api/live      {head_mode?, head_trace?}: applied on the next frame
     POST /api/head      {azimuth, elevation}: live head pose (head_mode "live"), sent ~30x/s
     POST /api/monitor   opens NDI Video Monitor on the computer running the stream (macOS)
 
@@ -107,8 +107,6 @@ def make_server(controller, options, host="127.0.0.1", port=8000, monitor=open_m
                     controller.stop()
                 elif self.path == "/api/live":
                     live = controller.live
-                    for source, step in (body.get("horizon") or {}).items():
-                        live.set_horizon(source, step)
                     if "head_mode" in body:
                         trace = body.get("head_trace")
                         if trace is not None:

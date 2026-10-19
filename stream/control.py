@@ -5,11 +5,12 @@ change while streaming: the stream reads them every frame. StreamStatus is writt
 the stream and read by the control page.
 """
 
+import math
 import threading
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from gaze.tracker import HeadTrace, LiveHead
+from gaze.tracker import MODEL_HZ, HeadTrace, LiveHead
 
 ROOT = Path(__file__).resolve().parent.parent
 VIDEOS = ROOT / "Videos"
@@ -24,10 +25,10 @@ SOURCES = {
     "source": "Source",      # the decoded video as is (LR)
     "vsr": "VSR",            # the SR model on the whole frame (+ RIFE when k > 1)
     "bicubic": "Bicubic",    # bicubic 4x
-    "gaze": "Gaze",          # bicubic 4x + the gaze prediction drawn on it
-    "foveated": "Foveated",  # bicubic 4x + the SR model around the predicted gaze
+    "foveated": "Foveated",  # bicubic 4x + the gaze prediction, and the SR model around it (fovea_sr)
 }
-GAZE_SOURCES = ("gaze", "foveated")  # need the gaze model
+GAZE_SOURCES = ("foveated",)  # need the gaze model
+CROPPED_SOURCES = ("source", "bicubic", "vsr")  # the video pipeline, which vsr_crop applies to
 DEFAULT_SOURCES = ["source"]  # the video as is: real time, no models loaded
 DEVICES = ("cuda", "mps", "cpu")
 HEAD_MODES = ("trace", "live")
@@ -43,9 +44,18 @@ class StreamOptions:
     # (vsr only) k=1: diffusion SR on every frame. k>1: SR on every k-th frame (keyframes),
     # RIFE interpolates the frames in between (faster, adds up to k-1 frames delay).
     k: int = 3
-    # (foveated only) side of the LR square around the gaze that the SR model upscales, whether
-    # that region is outlined on the foveated source, and whether the gaze prediction is drawn on it.
+    # (the video pipeline: source, bicubic, vsr) side of a centred LR square that those sources
+    # send (upscaled 4x by bicubic and vsr), so they stay comparable pixel for pixel and VSR's speed
+    # can be measured at other sizes without re-encoding the video; None = whole frame.
+    vsr_crop: int | None = None
+    # (foveated only) whether the SR model runs around the gaze (off: bicubic + the gaze
+    # prediction, real time), the side of the LR square it upscales, whether that region is
+    # outlined, and whether the gaze prediction is drawn.
+    fovea_sr: bool = True
     fovea: int = 96
+    # (foveated only) 1: SR on every frame's crop; k > 1: SR on every k-th frame's crop, RIFE in
+    # between, with the crop held still for each stretch of k frames (see upscale/foveated.py).
+    fovea_k: int = 1
     fovea_outline: bool = True
     fovea_gaze: bool = True
     batch: int = 2
@@ -61,8 +71,10 @@ class StreamOptions:
         return any(s in self.sources for s in GAZE_SOURCES)
 
     def source_names(self):
-        """{source key: NDI name} for the enabled sources, in SOURCES order."""
-        return {k: f"{self.name}-{label}" for k, label in SOURCES.items() if k in self.sources}
+        """{source key: NDI name} for the enabled sources, in SOURCES order. Cropped sources
+        are named "<name>-<label>-Cropped", so they are not mistaken for the whole frame."""
+        return {k: f"{self.name}-{label}" + ("-Cropped" if k in CROPPED_SOURCES and self.vsr_crop else "")
+                for k, label in SOURCES.items() if k in self.sources}
 
     @classmethod
     def from_dict(cls, data):
@@ -81,14 +93,18 @@ class StreamOptions:
         if opts.device not in (None, "", *DEVICES):
             raise ValueError(f"device must be one of {DEVICES} or empty for auto")
         opts.device = opts.device or None
-        opts.k, opts.batch, opts.fovea = int(opts.k), int(opts.batch), int(opts.fovea)
+        opts.k, opts.batch, opts.fovea, opts.fovea_k = int(opts.k), int(opts.batch), int(opts.fovea), int(opts.fovea_k)
         opts.start = float(opts.start)
         opts.frames = int(opts.frames) if opts.frames not in (None, "") else None
-        if opts.k < 1 or opts.batch < 1 or opts.start < 0 or (opts.frames is not None and opts.frames < 1):
-            raise ValueError("k, batch and frames must be at least 1; start at least 0")
+        opts.vsr_crop = int(opts.vsr_crop) if opts.vsr_crop not in (None, "", 0) else None
+        if opts.vsr_crop is not None and opts.vsr_crop < 16:
+            raise ValueError("crop must be at least 16 LR pixels (or empty for the whole frame)")
+        if opts.k < 1 or opts.fovea_k < 1 or opts.batch < 1 or opts.start < 0 or (opts.frames is not None and opts.frames < 1):
+            raise ValueError("k, foveated k, batch and frames must be at least 1; start at least 0")
         if opts.fovea < 16:
             raise ValueError("fovea must be at least 16 LR pixels")
         opts.once, opts.fovea_outline, opts.fovea_gaze = bool(opts.once), bool(opts.fovea_outline), bool(opts.fovea_gaze)
+        opts.fovea_sr = bool(opts.fovea_sr)
         opts.name = str(opts.name).strip() or cls.name
         return opts
 
@@ -98,6 +114,14 @@ class StreamOptions:
         d["gaze"] = self.gaze
         d["source_names"] = self.source_names()
         return d
+
+
+def stretch_horizon(k, fps):
+    """The foveated source's horizon: the gaze step (1-20, at MODEL_HZ) at the end of a stretch of
+    k video frames at `fps`, rounded up, so the predicted gaze that places the crop (and the ring)
+    is where the gaze will be when the stretch's last frame is shown (k = 1 -> step 1, the next
+    sample; k = 3 at 60 fps -> step 2, 67 ms)."""
+    return min(20, max(1, math.ceil(k * MODEL_HZ / float(fps))))
 
 
 def normalize_sources(sources):
@@ -122,34 +146,18 @@ def list_files(folder, *suffixes):
 
 
 class LiveSettings:
-    """Settings that take effect on the next frame. The stream polls `head_source` and
-    `horizons`; the page calls set_* from the server's threads.
+    """Settings that take effect on the next frame: the head pose source, which the stream polls;
+    the page calls set_* from the server's threads."""
 
-    `horizons`: per gaze-using source (gaze, foveated), which predicted step it uses, 1-20 at
-    30 Hz (1 = the next sample, 20 = 666 ms ahead): where the gaze source draws its ring and
-    where the foveated source places the SR region."""
-
-    def __init__(self, horizons=None, trace_path=None):
+    def __init__(self, trace_path=None):
         self._lock = threading.Lock()
         self.live_head = LiveHead()
-        self.horizons = {s: 20 for s in GAZE_SOURCES}  # furthest ahead (666 ms) by default
         # Live by default: until a pose is sent, the head stays at the centre.
         self.head_mode = "live"
         self.head_trace = None
         self.head_source = self.live_head
-        for source, step in (horizons or {}).items():
-            self.set_horizon(source, step)
         if trace_path:
             self.set_head("trace", trace_path)
-
-    def set_horizon(self, source, step):
-        if source not in GAZE_SOURCES:
-            raise ValueError(f"horizon is for one of {GAZE_SOURCES}, got {source!r}")
-        step = int(step)
-        if not 1 <= step <= 20:
-            raise ValueError(f"horizon must be between 1 and 20 steps, got {step}")
-        with self._lock:
-            self.horizons = dict(self.horizons, **{source: step})
 
     def set_head(self, mode, trace_path=None):
         """Switches the head pose source: 'trace' (CSV path) or 'live' (set_pose)."""
@@ -170,7 +178,7 @@ class LiveSettings:
     def snapshot(self):
         with self._lock:
             trace = Path(self.head_trace).name if self.head_trace else None
-            return {"horizons": dict(self.horizons), "head_mode": self.head_mode, "head_trace": trace,
+            return {"head_mode": self.head_mode, "head_trace": trace,
                     "head_pose": self.live_head.pose_at(0)}
 
 

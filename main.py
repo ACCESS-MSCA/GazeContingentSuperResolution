@@ -6,10 +6,11 @@ One process: ffmpeg decodes a pre-downscaled video as is, and each enabled sourc
   source    the decoded video as is
   vsr       the SR model on the whole frame (+ RIFE when --k > 1)
   bicubic   bicubic 4x
-  gaze      bicubic 4x with the gaze prediction drawn on it (gaze/ model on the LR frames)
-  foveated  the SR model around the predicted gaze, bicubic elsewhere (--fovea, --fovea-outline)
+  foveated  bicubic 4x with the gaze prediction drawn on it (gaze/ model on the LR frames), and
+            the SR model around the predicted gaze (--fovea, --fovea-k; --no-fovea-sr for bicubic only)
 The sources are sent in lockstep, frame for frame, so a run goes at the pace of its
-slowest source: bicubic,gaze is real time; foveated and vsr play in slow motion. The
+slowest source: source, bicubic and foveated with --no-fovea-sr are real time; foveated
+with SR and vsr play in slow motion. The
 video loops until Ctrl-C (or plays once with --once).
 
 --ui opens a control page instead: pick the options there, start and stop the stream,
@@ -17,9 +18,10 @@ and change the gaze step and head pose (drag or arrow keys) live.
 
 Usage:
     python main.py
-    python main.py <path_to_video> [--sources bicubic,gaze] [--k 3] [--fovea 96] [--no-fovea-outline] [--no-fovea-gaze]
+    python main.py <path_to_video> [--sources bicubic,foveated] [--k 3] [--no-fovea-sr] [--fovea 96] [--fovea-k 1]
+                   [--no-fovea-outline] [--no-fovea-gaze]
                    [--batch 2] [--start 0] [--frames N] [--once] [--device mps] [--name NAME]
-                   [--gaze-trace head.csv] [--gaze-horizon 20] [--fovea-horizon 20]
+                   [--gaze-trace head.csv]
     python main.py --ui [--ui-host 0.0.0.0] [--ui-port 8000]
 """
 
@@ -44,8 +46,14 @@ def parse_args():
     # (vsr only) k=1: diffusion SR on every frame. k>1: SR on every k-th frame (keyframes),
     # RIFE interpolates the frames in between (faster, adds up to k-1 frames delay).
     parser.add_argument("--k", type=int, default=3, help="keyframe stride")
+    parser.add_argument("--vsr-crop", type=int, default=None,
+                        help="source, bicubic and vsr: send only a centred square of this many LR px (default: whole frame)")
     parser.add_argument("--fovea", type=int, default=96,
                         help="foveated only: side of the LR square around the gaze upscaled by the SR model")
+    parser.add_argument("--fovea-sr", action=argparse.BooleanOptionalAction, default=True,
+                        help="foveated only: run the SR model around the gaze (default: on; off = bicubic + gaze prediction)")
+    parser.add_argument("--fovea-k", type=int, default=1,
+                        help="foveated only: SR on every k-th frame's crop, RIFE in between (default 1: every frame)")
     parser.add_argument("--fovea-outline", action=argparse.BooleanOptionalAction, default=True,
                         help="foveated only: outline the region the SR model upscaled (default: on)")
     parser.add_argument("--fovea-gaze", action=argparse.BooleanOptionalAction, default=True,
@@ -58,10 +66,6 @@ def parse_args():
     parser.add_argument("--name", default="StreamNDI", help="NDI name prefix: sources are <name>-Source, -Bicubic, ...")
     parser.add_argument("--gaze-trace", default=None,
                         help="head pose CSV (time,azimuth,elevation; s, deg); default: head at the centre")
-    parser.add_argument("--gaze-horizon", type=int, default=20,
-                        help="gaze source: predicted step it draws, 1-20 at 30 Hz (20 = 666 ms ahead)")
-    parser.add_argument("--fovea-horizon", type=int, default=20,
-                        help="foveated source: predicted step where the SR region goes, 1-20 at 30 Hz")
     # Control page: the options above become the page's starting values.
     parser.add_argument("--ui", action="store_true", help="open the control page instead of streaming")
     parser.add_argument("--ui-host", default="127.0.0.1", help="0.0.0.0 to reach the page from the LAN")
@@ -71,20 +75,16 @@ def parse_args():
         args.sources = normalize_sources(args.sources)
     except ValueError as exc:
         parser.error(str(exc))
-    for flag, step in (("--gaze-horizon", args.gaze_horizon), ("--fovea-horizon", args.fovea_horizon)):
-        if not 1 <= step <= 20:
-            parser.error(f"{flag} must be between 1 and 20, got {step}")
     return args
 
 
 def main():
     args = parse_args()
     opts = StreamOptions(
-        video=args.video, sources=args.sources, k=args.k, fovea=args.fovea, fovea_outline=args.fovea_outline, fovea_gaze=args.fovea_gaze,
+        video=args.video, sources=args.sources, k=args.k, vsr_crop=args.vsr_crop, fovea_sr=args.fovea_sr, fovea=args.fovea, fovea_k=args.fovea_k, fovea_outline=args.fovea_outline, fovea_gaze=args.fovea_gaze,
         batch=args.batch, start=args.start, frames=args.frames, once=args.once, device=args.device, name=args.name,
     )
-    live = LiveSettings(horizons={"gaze": args.gaze_horizon, "foveated": args.fovea_horizon},
-                        trace_path=args.gaze_trace)
+    live = LiveSettings(trace_path=args.gaze_trace)
 
     # Imported here so that --help does not load torch.
     if not args.ui:

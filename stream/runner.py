@@ -9,9 +9,10 @@ import threading
 import time
 from collections import deque
 
+import numpy as np
 import torch
 
-from stream.control import LiveSettings, StreamStatus
+from stream.control import CROPPED_SOURCES, SOURCES, LiveSettings, StreamStatus, stretch_horizon
 from stream.ffmpeg import decode_audio_to_array, probe_video, read_rgb_frames
 from stream.perf import Rates, mps_mb, peak_rss_mb
 
@@ -45,7 +46,7 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     are sent in lockstep: a frame goes out on all sources once each has it, so the run goes
     at the pace of its slowest source (bicubic + gaze is real time; foveated and vsr are not).
 
-    live: LiveSettings read every frame (horizons, head source); status: StreamStatus
+    live: LiveSettings read every frame (head source); status: StreamStatus
     to report progress to; stop: threading.Event; cache: dict to keep models between runs.
     """
     from gaze.tracker import ThreadedGazeTracker
@@ -67,7 +68,16 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     lr_w, lr_h, fps, _ = probe_video(opts.video)
     hr_w, hr_h = lr_w * SCALE, lr_h * SCALE
     device = opts.device or default_device()
-    status.update(size=[hr_w, hr_h], lr_size=[lr_w, lr_h])
+    # (the video pipeline: source, bicubic, vsr) a centred LR square, cut down to fit the frame,
+    # cut from each decoded frame; None = the whole frame. Foveated always uses the whole frame.
+    crop = min(opts.vsr_crop, lr_w, lr_h) if opts.vsr_crop and enabled & set(CROPPED_SOURCES) else None
+    crop_box = None if crop is None else ((lr_w - crop) // 2, (lr_h - crop) // 2, (lr_w + crop) // 2, (lr_h + crop) // 2)
+    hr_box = None if crop is None else tuple(v * SCALE for v in crop_box)
+    sizes = {k: (hr_w, hr_h) for k in SOURCES}
+    sizes["source"] = (lr_w, lr_h)
+    if crop:
+        sizes.update(source=(crop, crop), bicubic=(crop * SCALE, crop * SCALE), vsr=(crop * SCALE, crop * SCALE))
+    status.update(size=[hr_w, hr_h], lr_size=[lr_w, lr_h], sizes={k: list(v) for k, v in sizes.items()})
 
     print(f"Source  : {opts.video}")
     print(f"Size    : LR {lr_w}x{lr_h} -> HR {hr_w}x{hr_h} @ {float(fps):.3f} fps")
@@ -75,17 +85,20 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
 
     # --- Upscalers ------------------------------------------------------------
     # Each exposes push()/flush() and returns frames in order. Bicubic is computed once and
-    # shared by the bicubic, gaze and foveated sources.
+    # shared by the bicubic and foveated sources.
     upscalers = {}
-    if enabled & {"bicubic", "gaze", "foveated"}:
+    if enabled & {"bicubic", "foveated"}:
         upscalers["bicubic"] = BicubicStream(scale=SCALE, device=device)
-    if "foveated" in enabled:
-        # The SR model on a square around the gaze, on top of bicubic; SR on every frame
-        # (k=1), since RIFE cannot interpolate between crops at different positions.
-        sr1 = _cached(cache, ("vsr", 1, device), lambda: VSRPipeline(k=1, device=device))
-        upscalers["foveated"] = FoveatedStream(sr1, fovea=opts.fovea, device=device)
+    if "foveated" in enabled and not opts.fovea_sr:
+        print("Foveated: SR off, bicubic" + (" + gaze prediction" if opts.fovea_gaze else ""))
+    if "foveated" in enabled and opts.fovea_sr:
+        # The SR model on a square around the gaze, on top of bicubic: on every frame (fovea_k=1),
+        # or on every fovea_k-th frame with RIFE in between (the pipeline then loads RIFE too).
+        sr = _cached(cache, ("vsr", opts.fovea_k, device), lambda: VSRPipeline(k=opts.fovea_k, device=device))
+        upscalers["foveated"] = FoveatedStream(sr, fovea=opts.fovea, device=device, k=opts.fovea_k)
         extras = [x for x, on in (("outline", opts.fovea_outline), ("gaze prediction", opts.fovea_gaze)) if on]
-        print(f"Foveated: SR on {opts.fovea}x{opts.fovea} LR px at the gaze" + (f" + {', '.join(extras)}" if extras else ""))
+        print(f"Foveated: SR on {opts.fovea}x{opts.fovea} LR px at the gaze"
+              + (f", every {opts.fovea_k}th frame + RIFE" if opts.fovea_k > 1 else "") + (f" + {', '.join(extras)}" if extras else ""))
     if "vsr" in enabled:
         # The SR model on the whole frame (and RIFE when k > 1); weights download on first
         # run. The stream keeps keyframe spacing across push() calls, so frames can be fed
@@ -93,12 +106,15 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         pipeline = _cached(cache, ("vsr", opts.k, device), lambda: VSRPipeline(k=opts.k, device=device))
         upscalers["vsr"] = pipeline.stream()
         print(f"VSR     : k={opts.k}")
+    if crop:
+        print(f"Crop    : source, bicubic, vsr: centre {crop}x{crop} LR px ({crop * SCALE}x{crop * SCALE} upscaled)")
 
     # --- Gaze ----------------------------------------------------------------
     # The gaze model runs in its own process, driven from its own thread (ThreadedGazeTracker), so
     # the stream never waits for it. Each decoded frame takes the latest finished prediction
-    # (all 20 predicted steps), queued until that frame is sent. The head pose source and
-    # each source's horizon (which step it uses) are live settings, picked up every frame.
+    # (all 20 predicted steps), queued until that frame is sent. The foveated source uses the step
+    # at the end of its stretch of fovea_k frames (stretch_horizon); the head pose source is a live
+    # setting, picked up every frame.
     tracker = None
     if opts.gaze:
         from gaze.process import ProcessPredictor
@@ -106,10 +122,10 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         # In its own process: PyTorch's MPS backend is not thread-safe (see gaze/process.py).
         predictor = _cached(cache, ("gaze", device), lambda: ProcessPredictor(device=device))
         head_source = live.head_source
-        # The tracker's own step does not matter here: each source picks its step (live.horizons)
-        # from the full predicted path.
+        # The tracker's own step does not matter here: the source picks its step from the full path.
         tracker = ThreadedGazeTracker(fps, head_source, step=20, start=opts.start, predictor=predictor)
-        print(f"Gaze    : head {live.head_mode}, horizons {live.horizons}")
+        fov_h = stretch_horizon(opts.fovea_k, fps)
+        print(f"Gaze    : head {live.head_mode}, foveated horizon {fov_h} (k={opts.fovea_k})")
 
     # --- NDI output -----------------------------------------------------------
     # Audio is decoded whole, then trimmed so it lines up with --start.
@@ -120,8 +136,7 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     # One NDI source per enabled source; NDIOutput attaches the same audio block to each per
     # frame and paces the sends to the video's fps.
     names = opts.source_names()
-    output = NDIOutput({k: (n, lr_w, lr_h) if k == "source" else (n, hr_w, hr_h) for k, n in names.items()},
-                       fps, audio_data=audio_data)
+    output = NDIOutput({k: (n, *sizes[k]) for k, n in names.items()}, fps, audio_data=audio_data)
     print("Press Ctrl-C to stop.\n")
 
     started = time.monotonic()
@@ -148,6 +163,9 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
             elif key == "foveated":
                 # blends into copies of bicubic's frames instead of upscaling them again
                 out = up.push(batch, gazes, base=[f.copy() for f in bic] if bic is not None else None)
+            elif key == "vsr" and crop_box:
+                x0, y0, x1, y1 = crop_box
+                out = up.push([np.ascontiguousarray(f[y0:y1, x0:x1]) for f in batch])
             else:
                 out = up.push(batch)
             upscaling[key]["s"] += time.perf_counter() - start
@@ -161,6 +179,12 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         g = tracker.stats() if tracker else {}
         counters = {f"up_{k}_s": v["s"] for k, v in upscaling.items()}
         counters.update({f"up_{k}_n": v["frames"] for k, v in upscaling.items()})
+        if "vsr" in upscalers:  # the VSR source's two stages: SR on keyframes, RIFE in between
+            vsr = upscalers["vsr"]
+            counters.update(vsr_sr_s=vsr.sr_s, vsr_sr_n=vsr.sr_frames, vsr_rife_s=vsr.rife_s, vsr_rife_n=vsr.rife_frames)
+        if "foveated" in upscalers:  # the foveated source's two stages: SR on the crop, blend into bicubic
+            fov = upscalers["foveated"]
+            counters.update(fov_sr_s=fov.sr_s, fov_rife_s=fov.rife_s, fov_blend_s=fov.blend_s, fov_n=fov.frames)
         r = rates.update(
             now, sent=sent, idle_s=output.idle_s, stream_cpu_s=time.thread_time(), process_cpu_s=time.process_time(),
             predictions=g.get("predictions"), model_s=g.get("model_s"), roundtrip_s=g.get("roundtrip_s"),
@@ -177,7 +201,13 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
             "stream": {"fps": r["sent"], "video_fps": float(fps),
                        "upscale_ms": {k: ms_per(f"up_{k}_s", f"up_{k}_n") for k in upscalers},
                        # share of each second not spent waiting for the next frame slot
-                       "busy": max(0.0, 1.0 - r["idle_s"]), "late": output.dropped_timing_count},
+                       "busy": max(0.0, 1.0 - r["idle_s"]), "late": output.dropped_timing_count,
+                       # per stage: ms per frame it makes, and ms per frame sent (its share of the VSR source's cost)
+                       "vsr_stages": None if "vsr" not in upscalers else {
+                           stage: {"ms": ms_per(f"vsr_{stage}_s", f"vsr_{stage}_n"), "ms_out": ms_per(f"vsr_{stage}_s", "up_vsr_n")}
+                           for stage in ("sr", "rife")},
+                       "foveated_stages": None if "foveated" not in upscalers else {
+                           stage: ms_per(f"fov_{stage}_s", "fov_n") for stage in ("sr", "rife", "blend")}},
             "gaze": None if not tracker else {
                 "rate": r.get("predictions"), "model_ms": ms_per("model_s", "predictions"),
                 "roundtrip_ms": ms_per("roundtrip_s", "predictions"),
@@ -197,19 +227,18 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
             ups = {k: q.popleft() for k, q in ready.items()}
             frames = {}
             if "source" in enabled:
-                frames["source"] = rgb_to_bgra(lr)
-            if enabled & {"bicubic", "gaze"}:
-                bic = rgb_to_bgra(ups["bicubic"])
-                if "bicubic" in enabled:
-                    frames["bicubic"] = bic
-                if "gaze" in enabled:
-                    marked = bic.copy() if "bicubic" in enabled else bic
-                    frames["gaze"] = draw_gaze_prediction(marked, points.get("gaze"), path)
+                frames["source"] = rgb_to_bgra(lr if crop_box is None else lr[crop_box[1]:crop_box[3], crop_box[0]:crop_box[2]])
+            if "bicubic" in enabled:
+                bic = ups["bicubic"]  # the whole frame, shared with foveated: cut after upscaling
+                frames["bicubic"] = rgb_to_bgra(bic if hr_box is None else bic[hr_box[1]:hr_box[3], hr_box[0]:hr_box[2]])
             if "foveated" in enabled:
-                fov, box = ups["foveated"]
-                frames["foveated"] = rgb_to_bgra(fov)
-                if opts.fovea_outline:
-                    draw_fovea(frames["foveated"], box)
+                if opts.fovea_sr:
+                    fov, box = ups["foveated"]
+                    frames["foveated"] = rgb_to_bgra(fov)
+                    if opts.fovea_outline:
+                        draw_fovea(frames["foveated"], box)
+                else:  # SR off: the bicubic frame, with the gaze prediction drawn on it
+                    frames["foveated"] = rgb_to_bgra(ups["bicubic"])
                 if opts.fovea_gaze:
                     draw_gaze_prediction(frames["foveated"], points.get("foveated"), path)
             if "vsr" in enabled:
@@ -217,7 +246,7 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
             output.send(frames)
             sent += 1
             elapsed = time.monotonic() - started
-            status.update(sent=sent, fps=sent / elapsed, gaze=points.get("gaze") or points.get("foveated"), gaze_info=info)
+            status.update(sent=sent, fps=sent / elapsed, gaze=points.get("foveated"), gaze_info=info)
             now = time.monotonic()
             if now >= next_perf:
                 report_perf(now)
@@ -250,8 +279,8 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
                             tracker.set_source(head_source)
                         tracker.update(frame)
                         info = tracker.latest()[1]
-                        if info:  # each gaze-using source at its own horizon
-                            points = {s: info["path"][h - 1] for s, h in live.horizons.items()}
+                        if info:  # the foveated source's point: the step at the end of its stretch
+                            points = {"foveated": info["path"][fov_h - 1]}
                         status.update(head=tracker.trace.pose_at(opts.start + tracker.frame_idx / float(fps)))
                     pending.append((frame, info, points))
                     batch_gazes.append(points.get("foveated"))

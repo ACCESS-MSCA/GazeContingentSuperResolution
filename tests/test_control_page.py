@@ -74,7 +74,6 @@ def test_page_and_state(server):
     assert state["videos"] == ["clip.mp4"] and state["traces"] == ["head.csv"]
     assert state["options"]["video"] == "clip.mp4"
     assert state["live"]["head_mode"] == "live" and state["status"]["state"] == "idle"
-    assert state["live"]["horizons"] == {"gaze": 20, "foveated": 20}
     assert StreamOptions().sources == ["source"] and StreamOptions().gaze is False
     assert StreamOptions().fovea_outline is True
     assert StreamOptions().fovea_gaze is True
@@ -82,20 +81,41 @@ def test_page_and_state(server):
 
 def test_start_validates_and_converts_options(server, videos):
     controller, call = server
-    code, _ = call("/api/start", {"options": {"video": "clip.mp4", "sources": ["vsr", "source", "gaze"], "k": "2",
+    code, _ = call("/api/start", {"options": {"video": "clip.mp4", "sources": ["foveated", "source", "vsr"], "k": "2",
                                               "frames": "", "device": "", "fovea_outline": 1}})
     assert code == 200
     opts = controller.started[-1]
     assert opts.video == str(videos / "clip.mp4") and opts.k == 2 and opts.frames is None and opts.device is None
-    assert opts.sources == ["source", "vsr", "gaze"]  # canonical order
+    assert opts.sources == ["source", "vsr", "foveated"]  # canonical order
     assert opts.gaze is True and opts.fovea_outline is True
-    assert opts.source_names() == {"source": "StreamNDI-Source", "gaze": "StreamNDI-Gaze", "vsr": "StreamNDI-VSR"}
+    assert opts.source_names() == {"source": "StreamNDI-Source", "foveated": "StreamNDI-Foveated", "vsr": "StreamNDI-VSR"}
+
+
+def test_vsr_crop_is_optional(server, videos):
+    controller, call = server
+    assert call("/api/start", {"options": {"video": "clip.mp4", "vsr_crop": ""}})[0] == 200
+    assert controller.started[-1].vsr_crop is None  # whole frame
+    assert call("/api/start", {"options": {"video": "clip.mp4", "sources": ["vsr"], "vsr_crop": "64"}})[0] == 200
+    assert controller.started[-1].vsr_crop == 64
+    assert controller.started[-1].source_names()["vsr"] == "StreamNDI-VSR-Cropped"
+    assert call("/api/start", {"options": {"video": "clip.mp4", "sources": ["source", "bicubic", "foveated"], "vsr_crop": "64"}})[0] == 200
+    assert controller.started[-1].source_names() == {  # the whole video pipeline is cropped, not foveated
+        "source": "StreamNDI-Source-Cropped", "bicubic": "StreamNDI-Bicubic-Cropped", "foveated": "StreamNDI-Foveated"}
+
+
+def test_foveated_sr_can_be_off(server, videos):
+    controller, call = server
+    assert call("/api/start", {"options": {"video": "clip.mp4", "sources": ["foveated"], "fovea_sr": False}})[0] == 200
+    opts = controller.started[-1]
+    assert opts.fovea_sr is False and opts.gaze is True  # the gaze model still runs
+    assert StreamOptions().fovea_sr is True
 
 
 @pytest.mark.parametrize("options", [
     {"video": "../secret.mp4"}, {"video": "missing.mp4"}, {"video": "clip.mp4", "sources": ["x"]},
     {"video": "clip.mp4", "k": 0}, {"video": "clip.mp4", "device": "tpu"}, {"video": "clip.mp4", "nope": 1},
     {"video": "clip.mp4", "sources": []}, {"video": "clip.mp4", "model": "vsr"}, {"video": "clip.mp4", "fovea": 4},
+    {"video": "clip.mp4", "vsr_crop": 8},
 ])
 def test_start_rejects_bad_options(server, options):
     controller, call = server
@@ -104,15 +124,9 @@ def test_start_rejects_bad_options(server, options):
     assert controller.started == []
 
 
+
 def test_live_settings_and_head_pose(server):
     controller, call = server
-    assert call("/api/live", {"horizon": {"foveated": 3}})[0] == 200
-    assert controller.live.horizons == {"gaze": 20, "foveated": 3}  # each source on its own
-    assert call("/api/live", {"horizon": {"gaze": 12}})[0] == 200
-    assert controller.live.horizons == {"gaze": 12, "foveated": 3}
-    assert call("/api/live", {"horizon": {"gaze": 21}})[0] == 400
-    assert call("/api/live", {"horizon": {"bicubic": 5}})[0] == 400  # not a gaze-using source
-
     assert call("/api/live", {"head_mode": "trace", "head_trace": "head.csv"})[0] == 200
     assert isinstance(controller.live.head_source, HeadTrace)
     assert controller.live.head_source.pose_at(0.5) == pytest.approx((5.0, 2.5))
@@ -201,4 +215,11 @@ def test_state_survives_failing_ndi_discovery(videos):
 def test_gaze_model_runs_only_for_sources_that_need_it():
     assert StreamOptions(sources=["source", "bicubic", "vsr"]).gaze is False
     assert StreamOptions(sources=["foveated"]).gaze is True
-    assert StreamOptions(sources=["gaze"]).to_dict()["gaze"] is True
+    assert StreamOptions(sources=["foveated"]).to_dict()["gaze"] is True
+
+
+def test_horizon_follows_foveated_k():
+    from stream.control import stretch_horizon
+    # k video frames at 60 fps -> gaze steps at 30 Hz, rounded up
+    assert [stretch_horizon(k, 60) for k in (1, 2, 3, 5)] == [1, 1, 2, 3]
+    assert stretch_horizon(3, 30) == 3 and stretch_horizon(100, 30) == 20  # capped at the last step
