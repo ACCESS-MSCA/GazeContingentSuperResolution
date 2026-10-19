@@ -50,12 +50,12 @@ class VSRPipeline:
 
         self.k = k
         self.batch_size = batch_size
+        self._cache_dir = cache_dir
 
         resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(resolved_device)
         self.dtype = dtype or _default_dtype(self.device)
 
-        from .interpolation import InterpolationPipeline
         from .super_resolution import SuperResolutionPipeline
 
         if sr_model_ckpt is None or sr_decoder_ckpt is None:
@@ -77,16 +77,22 @@ class VSRPipeline:
         )
         self.scale_factor = self.sr.scale_factor
 
-        # K=1 never interpolates, so the RIFE weights are not even fetched.
+        # K=1 never interpolates, so the RIFE weights are not even fetched
+        # (load_interpolation() adds them later if a k > 1 is needed).
         self.interpolation = None
         if k > 1:
-            if interpolation_model_dir is None:
-                interpolation_model_dir = weights.ensure_interpolation_weights(
-                    cache_dir
-                )
-            self.interpolation = InterpolationPipeline(
-                model_dir=interpolation_model_dir, device=self.device
-            )
+            self.load_interpolation(interpolation_model_dir)
+
+    def load_interpolation(self, model_dir: str | None = None) -> None:
+        """Loads RIFE if it is not loaded yet, so a pipeline built with k=1 can also
+        stream (or be called) with k > 1. The SR model is unchanged."""
+        if self.interpolation is not None:
+            return
+        from .interpolation import InterpolationPipeline
+
+        if model_dir is None:
+            model_dir = weights.ensure_interpolation_weights(self._cache_dir)
+        self.interpolation = InterpolationPipeline(model_dir=model_dir, device=self.device)
 
     @torch.no_grad()
     def __call__(self, images, k: int | None = None) -> list[np.ndarray]:

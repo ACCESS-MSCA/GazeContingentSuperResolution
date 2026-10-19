@@ -350,6 +350,9 @@ function fillOptions(o, videos, traces) {
                                         : "<option value=''>no CSV in Videos/</option>";
   for (const el of form.elements) {
     if (!(el.name in o)) continue;
+    // a k from the command line beyond the dropdown's 1-10: add it, or the page would send ""
+    if (el.classList.contains("every-pick") && ![...el.options].some((op) => op.value === String(o[el.name])))
+      el.add(new Option(`every ${ordinal(+o[el.name])}${el.dataset.short ? "" : " frame"}`, o[el.name]));
     if (el.type === "checkbox") el.checked = !!o[el.name];
     else el.value = o[el.name] ?? "";
   }

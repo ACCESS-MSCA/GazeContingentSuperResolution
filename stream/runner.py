@@ -29,6 +29,18 @@ def default_device() -> str:
     return "cpu"
 
 
+def _vsr_pipeline(cache, device, k):
+    """The SR pipeline for `device`, one per device whatever k is (vsr and foveated share it):
+    k only decides how often SR runs, so a new k loads RIFE once (k > 1) instead of another
+    copy of the SR model."""
+    from upscale.vsr import VSRPipeline
+
+    pipeline = _cached(cache, ("vsr", device), lambda: VSRPipeline(k=1, device=device))
+    if k > 1:
+        pipeline.load_interpolation()
+    return pipeline
+
+
 def _cached(cache, key, factory):
     """Models are kept between runs started from the control page, so a restart with
     other options only reloads what changed."""
@@ -54,7 +66,6 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     from ndi.overlay import draw_fovea, draw_gaze_prediction
     from upscale.bicubic import BicubicStream
     from upscale.foveated import FoveatedStream
-    from upscale.vsr import VSRPipeline
 
     live = live or LiveSettings()
     status = status or StreamStatus()
@@ -94,17 +105,17 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     if "foveated" in enabled and opts.fovea_sr:
         # The SR model on a square around the gaze, on top of bicubic: on every frame (fovea_k=1),
         # or on every fovea_k-th frame with RIFE in between (the pipeline then loads RIFE too).
-        sr = _cached(cache, ("vsr", opts.fovea_k, device), lambda: VSRPipeline(k=opts.fovea_k, device=device))
+        sr = _vsr_pipeline(cache, device, opts.fovea_k)
         upscalers["foveated"] = FoveatedStream(sr, fovea=opts.fovea, device=device, k=opts.fovea_k)
         extras = [x for x, on in (("outline", opts.fovea_outline), ("gaze prediction", opts.fovea_gaze)) if on]
         print(f"Foveated: SR on {opts.fovea}x{opts.fovea} LR px at the gaze"
-              + (f", every {opts.fovea_k}th frame + RIFE" if opts.fovea_k > 1 else "") + (f" + {', '.join(extras)}" if extras else ""))
+              + (f", every {opts.fovea_k}{'nd' if opts.fovea_k == 2 else 'rd' if opts.fovea_k == 3 else 'th'} frame + RIFE" if opts.fovea_k > 1 else "") + (f" + {', '.join(extras)}" if extras else ""))
     if "vsr" in enabled:
         # The SR model on the whole frame (and RIFE when k > 1); weights download on first
         # run. The stream keeps keyframe spacing across push() calls, so frames can be fed
         # in small batches, but it returns them up to k-1 frames late.
-        pipeline = _cached(cache, ("vsr", opts.k, device), lambda: VSRPipeline(k=opts.k, device=device))
-        upscalers["vsr"] = pipeline.stream()
+        pipeline = _vsr_pipeline(cache, device, opts.k)
+        upscalers["vsr"] = pipeline.stream(k=opts.k)
         print(f"VSR     : k={opts.k}")
     if crop:
         print(f"Crop    : source, bicubic, vsr: centre {crop}x{crop} LR px ({crop * SCALE}x{crop * SCALE} upscaled)")
