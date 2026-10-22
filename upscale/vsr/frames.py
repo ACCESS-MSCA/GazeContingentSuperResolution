@@ -71,6 +71,15 @@ def to_batch(frames, device, dtype) -> torch.Tensor:
     if not frames:
         raise ValueError("expected at least one frame")
 
+    if all(isinstance(f, np.ndarray) and f.dtype == np.uint8 and f.ndim == 3 and f.shape[-1] == 3 for f in frames):
+        # The usual case, decoded RGB frames: uploaded as uint8 and converted on the device,
+        # 4x less to copy and no float conversion on the CPU (2.0 -> 0.5 ms at 960x540).
+        if len({f.shape for f in frames}) != 1:
+            raise ValueError(f"all frames must share a shape, got {sorted({f.shape for f in frames})}")
+        # contiguous: a channels-last layout made bicubic 5x slower on MPS
+        batch = torch.from_numpy(np.stack(frames)).to(device).permute(0, 3, 1, 2).contiguous()
+        return batch.to(torch.float32).div_(255.0).to(dtype)
+
     tensors = [_to_float_chw_tensor(f) for f in frames]
 
     shapes = {tuple(t.shape) for t in tensors}
@@ -104,3 +113,39 @@ def to_numpy(tensor: torch.Tensor) -> list[np.ndarray]:
         .numpy()
     )
     return [np.ascontiguousarray(frame) for frame in array]
+
+
+_COMPILED = {}
+
+
+def compiled(fn, device: torch.device):
+    """`fn` compiled with torch.compile on a GPU (MPS, CUDA), as is on the CPU. For chains of
+    elementwise ops over whole output frames, which run as one kernel when compiled instead
+    of a pass over the frame each (4K BGRA conversion on an M4: 14 -> 3 ms). The first call
+    per shape compiles (about a second); TORCHDYNAMO_DISABLE=1 turns it off."""
+    if torch.device(device).type == "cpu":
+        return fn
+    if fn not in _COMPILED:
+        _COMPILED[fn] = torch.compile(fn)
+    return _COMPILED[fn]
+
+
+def _bgra(tensor: torch.Tensor) -> torch.Tensor:
+    rgb = tensor.to(torch.float32).clamp(0.0, 1.0).mul(255.0).round().to(torch.uint8)
+    alpha = torch.full_like(rgb[:, :1], 255)
+    return torch.cat([rgb.flip(1), alpha], dim=1).permute(0, 2, 3, 1).contiguous()
+
+
+def to_bgra_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    """Converts an (N, 3, H, W) RGB tensor in [0, 1] to a uint8 (N, H, W, 4) BGRA tensor, the
+    layout NDI sends, on the tensor's device."""
+    if tensor.ndim == 3:
+        tensor = tensor.unsqueeze(0)
+    return compiled(_bgra, tensor.device)(tensor.detach())
+
+
+def to_bgra(tensor: torch.Tensor) -> list[np.ndarray]:
+    """Converts an (N, 3, H, W) RGB tensor in [0, 1] to uint8 (H, W, 4) BGRA arrays, the
+    format NDI sends. The conversion runs on the tensor's device and the result is copied
+    off it once: at 4K output, converting on the CPU took longer than upscaling."""
+    return list(to_bgra_tensor(tensor).cpu().numpy())

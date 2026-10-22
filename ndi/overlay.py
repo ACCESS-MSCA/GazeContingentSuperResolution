@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 GREEN = np.array((0, 255, 0), np.float32)  # BGR
@@ -15,11 +17,17 @@ def draw_gaze(frame: np.ndarray, uv) -> np.ndarray:
     radius = max(6, min(h, w) // 10)
     thickness = max(2, radius // 8)
 
-    ys, xs = np.ogrid[:h, :w]
+    # only the square around the ring (the whole frame took 24 ms at 4K)
+    reach = radius + thickness
+    x0, x1 = max(0, math.floor(cx - reach)), min(w, math.ceil(cx + reach) + 1)
+    y0, y1 = max(0, math.floor(cy - reach)), min(h, math.ceil(cy + reach) + 1)
+    if x0 >= x1 or y0 >= y1:
+        return frame
+    ys, xs = np.ogrid[y0:y1, x0:x1]
     dist = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2)
     ring = np.abs(dist - radius) <= thickness / 2
     dot = dist <= thickness
-    frame[ring | dot] = (0, 255, 0, 255)  # green (BGRA)
+    frame[y0:y1, x0:x1][ring | dot] = (0, 255, 0, 255)  # green (BGRA)
     return frame
 
 

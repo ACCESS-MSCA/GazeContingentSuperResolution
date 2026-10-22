@@ -21,6 +21,10 @@ lags input by up to k-1 frames, as with the vsr source.
 Same push()/flush() interface as the other upscalers, plus the gaze points: push(frames,
 gazes) returns the frames that are ready (all of them at k = 1), and `last_boxes` holds each
 returned frame's fovea region in output (HR) pixels, for drawing on the -Foveated source.
+
+The frames stay on the device from bicubic to the blend; only the finished frame is copied
+off it, as RGB or (bgra=True) as the BGRA that NDI sends. At 4K output, handling the whole
+frame on the CPU took longer than the SR model.
 """
 
 import time
@@ -44,10 +48,9 @@ STICKY = 0.25
 
 
 def lowpass(images):
-    """(N, H, W, 3) float32 -> blurred (N, H, W, 3): area-downsample by LOWPASS, bilinear back up."""
-    t = torch.from_numpy(images).permute(0, 3, 1, 2)
-    small = F.interpolate(t, scale_factor=1 / LOWPASS, mode="area")
-    return F.interpolate(small, size=t.shape[-2:], mode="bilinear", align_corners=False).permute(0, 2, 3, 1).numpy()
+    """(N, 3, H, W) float tensor -> blurred (N, 3, H, W): area-downsample by LOWPASS, bilinear back up."""
+    small = F.interpolate(images, scale_factor=1 / LOWPASS, mode="area")
+    return F.interpolate(small, size=images.shape[-2:], mode="bilinear", align_corners=False)
 
 
 def fovea_box(uv, width, height, size):
@@ -82,9 +85,10 @@ def mean_gaze(gazes):
 class FoveatedStream:
     """Bicubic on the whole frame + `sr` (a VSRPipeline) on a `fovea` x `fovea` LR square
     around the gaze point: on every frame (k = 1), or on every k-th frame with RIFE in
-    between (k > 1; `sr` must then have its interpolation model, i.e. be built with k > 1)."""
+    between (k > 1; `sr` must then have its interpolation model, i.e. be built with k > 1).
+    Returns uint8 (H, W, 3) RGB frames, or (H, W, 4) BGRA with bgra=True."""
 
-    def __init__(self, sr, fovea=96, device="cpu", k=1):
+    def __init__(self, sr, fovea=96, device="cpu", k=1, bgra=False):
         if fovea < 16:
             raise ValueError(f"fovea must be at least 16 LR pixels, got {fovea}")
         if k < 1:
@@ -94,6 +98,8 @@ class FoveatedStream:
         self.sr = sr
         self.fovea = fovea
         self.k = k
+        self.bgra = bgra
+        self.device = torch.device(device)
         self.base = BicubicStream(scale=SCALE, device=device)
         self._mask = None
         self.last_boxes = []
@@ -106,25 +112,27 @@ class FoveatedStream:
     def reset(self):
         """Forgets frames held for the next keyframe (k > 1). Call between clips."""
         self._index = 0
-        self._pending = []  # (index, LR frame, gaze, bicubic frame) after the last keyframe
+        self._pending = []  # (index, LR frame, gaze, (1, 3, H, W) bicubic frame) after the last keyframe
         self._previous = None  # the last keyframe: (LR frame, LR box, SR crop tensor)
 
+    @torch.no_grad()
     def push(self, images, gazes=None, base=None) -> list[np.ndarray]:
         """Upscales a batch of uint8 (H, W, 3) frames (`gazes`: one (u, v) or None per frame).
-        `base`: the frames already upscaled with bicubic (writable copies, blended into in
-        place), to avoid computing them twice. Returns the frames that are ready, in order."""
+        `base`: the frames already upscaled with bicubic, as BicubicStream.upscale returns them
+        (left unchanged), to avoid computing them twice. Returns the frames that are ready, in order."""
         self.last_boxes = []
         if not images:
             return []
         gazes = gazes if gazes is not None else [None] * len(images)
-        bases = base if base is not None else self.base.push(images)
+        bases = base if base is not None else self.base.upscale(images)
         if self.k == 1:
             return self._every_frame(images, gazes, bases)
-        for image, gaze, frame in zip(images, gazes, bases):
-            self._pending.append((self._index, image, gaze, frame))
+        for i, (image, gaze) in enumerate(zip(images, gazes)):
+            self._pending.append((self._index, image, gaze, bases[i:i + 1]))
             self._index += 1
         return self._drain(final=False)
 
+    @torch.no_grad()
     def flush(self) -> list[np.ndarray]:
         """Returns the frames still held (k > 1), the last one taken as a keyframe, and resets."""
         self.last_boxes = []
@@ -139,7 +147,7 @@ class FoveatedStream:
         boxes = [fovea_box(g, w, h, size) for g in gazes]
         crops = [np.ascontiguousarray(img[y0:y1, x0:x1]) for img, (x0, y0, x1, y1) in zip(images, boxes)]
         start = time.perf_counter()
-        sr = np.stack(self.sr(crops)).astype(np.float32)  # numpy out, so the GPU work is done
+        sr = frame_io.to_batch(self.sr(crops), device=self.device, dtype=torch.float32)  # numpy out, so the GPU work is done
         self.sr_s += time.perf_counter() - start
         self.sr_frames += len(crops)
         return self._blend(bases, sr, boxes)
@@ -173,7 +181,7 @@ class FoveatedStream:
             end_sr = self._sr_crops([image], box)[0]
             self.sr_s += time.perf_counter() - start
             self._previous = (image, box, end_sr)
-            return self._blend([stretch[-1][3]], self._numpy([end_sr]), [box]), [_hr(box)]
+            return self._blend(stretch[-1][3], end_sr, [box]), [_hr(box)]
         prev_image, prev_box, prev_sr = self._previous
         if max(abs(a - b) for a, b in zip(prev_box, box)) <= STICKY * size:
             box = prev_box  # close enough: keep the crop, and the previous keyframe's SR
@@ -185,11 +193,12 @@ class FoveatedStream:
         start = time.perf_counter()
         n = len(stretch)
         mids = [self.sr.interpolation(prev_sr, end_sr, timestep=i / n) for i in range(1, n)]
-        crops = self._numpy(mids + [end_sr])
+        crops = torch.cat(mids + [end_sr])
+        self._sync()  # so the RIFE time is not counted as the blend's
         self.rife_s += time.perf_counter() - start
         self.rife_frames += len(mids)
         self._previous = (image, box, end_sr)
-        return self._blend([frame for *_, frame in stretch], crops, [box] * n), [_hr(box)] * n
+        return self._blend(torch.cat([frame for *_, frame in stretch]), crops, [box] * n), [_hr(box)] * n
 
     def _sr_crops(self, images, box):
         """SR of each image's `box` crop, as (1, C, 4h, 4w) tensors (for RIFE)."""
@@ -209,29 +218,36 @@ class FoveatedStream:
         elif device.type == "mps":
             torch.mps.synchronize()
 
-    def _numpy(self, tensors):
-        """(1, C, H, W) tensors -> (N, H, W, 3) float32 (waits for the GPU)."""
-        return np.stack([frame_io.to_numpy(t)[0] for t in tensors]).astype(np.float32)
-
     # --- both ------------------------------------------------------------------------------------
     def _blend(self, bases, sr, boxes):
-        """Blends SR crops (N, 4h, 4w, 3 float32) into the bicubic frames at the LR `boxes`:
-        SR detail on bicubic's colours, through the round soft-edged mask."""
+        """Blends SR crops ((N, 3, 4h, 4w) tensor in [0, 1]) into the bicubic frames ((N, 3, H, W)
+        tensor, not changed) at the LR `boxes`: SR detail on bicubic's colours, through the round
+        soft-edged mask. Returns the frames as uint8 arrays (RGB, or BGRA with bgra=True)."""
         start = time.perf_counter()
         size = boxes[0][2] - boxes[0][0]
-        if self._mask is None or self._mask.shape[0] != size * SCALE:
-            self._mask = fovea_mask(size * SCALE)
+        if self._mask is None or self._mask.shape[-1] != size * SCALE:
+            self._mask = torch.from_numpy(fovea_mask(size * SCALE)).permute(2, 0, 1)[None].to(self.device)
         hr = [_hr(b) for b in boxes]
-        base = np.stack([frame[Y0:Y1, X0:X1] for frame, (X0, Y0, X1, Y1) in zip(bases, hr)]).astype(np.float32)
+        bases = bases.to(self.device, torch.float32)
+        base = torch.cat([frame[None, :, Y0:Y1, X0:X1] for frame, (X0, Y0, X1, Y1) in zip(bases, hr)])
+        sr = sr.to(self.device, torch.float32)
         # SR detail on bicubic's colours: base_low + (sr - sr_low)
         fused = sr - lowpass(sr) + lowpass(base)
         blended = base + (fused - base) * self._mask
-        for frame, region, (X0, Y0, X1, Y1) in zip(bases, blended, hr):
-            frame[Y0:Y1, X0:X1] = np.clip(region + 0.5, 0, 255).astype(np.uint8)
+        if self.bgra:  # convert the frames and the blended regions, and paste the regions in
+            out, regions = frame_io.to_bgra_tensor(bases), frame_io.to_bgra_tensor(blended)
+            for frame, region, (X0, Y0, X1, Y1) in zip(out, regions, hr):
+                frame[Y0:Y1, X0:X1] = region
+            frames = list(out.cpu().numpy())  # waits for the GPU
+        else:
+            out = bases.clone()
+            for frame, region, (X0, Y0, X1, Y1) in zip(out, blended, hr):
+                frame[:, Y0:Y1, X0:X1] = region
+            frames = frame_io.to_numpy(out)
         self.blend_s += time.perf_counter() - start
-        self.frames += len(bases)
+        self.frames += len(frames)
         self.last_boxes = hr
-        return list(bases)
+        return frames
 
 
 def _hr(box):

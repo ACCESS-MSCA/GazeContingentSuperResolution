@@ -70,6 +70,7 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     from ndi.overlay import draw_fovea, draw_gaze_prediction
     from upscale.bicubic import BicubicStream
     from upscale.foveated import FoveatedStream
+    from upscale.vsr import frames as frame_io
 
     live = live or LiveSettings()
     status = status or StreamStatus()
@@ -100,8 +101,11 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
 
     # --- Upscalers ------------------------------------------------------------
     # Each exposes push()/flush() and returns frames in order. Bicubic is computed once and
-    # shared by the bicubic and foveated sources.
+    # shared by the bicubic and foveated sources, on the device: bicubic and foveated frames
+    # stay there until they are converted to BGRA for NDI (frame_io.to_bgra).
     upscalers = {}
+    # bicubic's own frames are only needed by its source, and by foveated with SR off
+    bicubic_frames = "bicubic" in enabled or ("foveated" in enabled and not opts.fovea_sr)
     if enabled & {"bicubic", "foveated"}:
         upscalers["bicubic"] = BicubicStream(scale=SCALE, device=device)
     if "foveated" in enabled and not opts.fovea_sr:
@@ -110,7 +114,7 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         # The SR model on a square around the gaze, on top of bicubic: on every frame (fovea_k=1),
         # or on every fovea_k-th frame with RIFE in between (the pipeline then loads RIFE too).
         sr = _vsr_pipeline(cache, device, opts.fovea_k)
-        upscalers["foveated"] = FoveatedStream(sr, fovea=opts.fovea, device=device, k=opts.fovea_k)
+        upscalers["foveated"] = FoveatedStream(sr, fovea=opts.fovea, device=device, k=opts.fovea_k, bgra=True)
         extras = [x for x, on in (("outline", opts.fovea_outline), ("gaze prediction", opts.fovea_gaze)) if on]
         print(f"Foveated: SR on {opts.fovea}x{opts.fovea} LR px at the gaze"
               + (f", every {opts.fovea_k}{'nd' if opts.fovea_k == 2 else 'rd' if opts.fovea_k == 3 else 'th'} frame + RIFE" if opts.fovea_k > 1 else "") + (f" + {', '.join(extras)}" if extras else ""))
@@ -173,14 +177,17 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
 
     def upscale(batch=None, gazes=None):
         """Pushes a batch through every upscaler (flushes without a batch), timed per upscaler."""
-        bic = None
+        bic = None  # bicubic's frames, on the device
         for key, up in upscalers.items():
             start = time.perf_counter()
             if batch is None:
                 out = up.flush()
+            elif key == "bicubic":
+                bic = up.upscale(batch)
+                out = frame_io.to_bgra(bic) if bicubic_frames else [None] * len(batch)
             elif key == "foveated":
-                # blends into copies of bicubic's frames instead of upscaling them again
-                out = up.push(batch, gazes, base=[f.copy() for f in bic] if bic is not None else None)
+                # blends into bicubic's frames instead of upscaling them again
+                out = up.push(batch, gazes, base=bic)
             elif key == "vsr" and crop_box:
                 x0, y0, x1, y1 = crop_box
                 out = up.push([np.ascontiguousarray(f[y0:y1, x0:x1]) for f in batch])
@@ -188,8 +195,6 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
                 out = up.push(batch)
             upscaling[key]["s"] += time.perf_counter() - start
             upscaling[key]["frames"] += len(out)
-            if key == "bicubic":
-                bic = out
             ready[key].extend(zip(out, up.last_boxes) if key == "foveated" else out)
         send_ready()
 
@@ -242,16 +247,16 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         if "source" in enabled:
             frames["source"] = rgb_to_bgra(lr if crop_box is None else lr[crop_box[1]:crop_box[3], crop_box[0]:crop_box[2]])
         if "bicubic" in enabled:
-            bic = ups["bicubic"]  # the whole frame, shared with foveated: cut after upscaling
-            frames["bicubic"] = rgb_to_bgra(bic if hr_box is None else bic[hr_box[1]:hr_box[3], hr_box[0]:hr_box[2]])
+            bic = ups["bicubic"]  # BGRA; the whole frame, shared with foveated: cut after upscaling
+            frames["bicubic"] = bic if hr_box is None else np.ascontiguousarray(bic[hr_box[1]:hr_box[3], hr_box[0]:hr_box[2]])
         if "foveated" in enabled:
             if opts.fovea_sr:
-                fov, box = ups["foveated"]
-                frames["foveated"] = rgb_to_bgra(fov)
+                fov, box = ups["foveated"]  # BGRA
+                frames["foveated"] = fov
                 if opts.fovea_outline:
                     draw_fovea(frames["foveated"], box)
-            else:  # SR off: the bicubic frame, with the gaze prediction drawn on it
-                frames["foveated"] = rgb_to_bgra(ups["bicubic"])
+            else:  # SR off: the bicubic frame (a copy if the bicubic source sends it too), with the gaze prediction drawn on it
+                frames["foveated"] = ups["bicubic"].copy() if "bicubic" in enabled else ups["bicubic"]
             if opts.fovea_gaze:
                 draw_gaze_prediction(frames["foveated"], points.get("foveated"), path)
         if "vsr" in enabled:

@@ -112,3 +112,30 @@ def test_non_rgb_frames_are_rejected(channels):
         frame_io.to_batch(
             [np.zeros((8, 8, channels), np.uint8)], device="cpu", dtype=torch.float32
         )
+
+
+def test_uint8_fast_path_matches_the_general_one():
+    frames = [np.random.default_rng(i).integers(0, 256, (5, 7, 3), dtype=np.uint8) for i in range(2)]
+    fast = frame_io.to_batch(frames, device="cpu", dtype=torch.float32)
+    general = frame_io.to_batch([torch.from_numpy(f).permute(2, 0, 1) for f in frames], device="cpu", dtype=torch.float32)
+    assert torch.equal(fast, general)
+
+
+def test_to_bgra_swaps_channels_and_adds_alpha():
+    t = torch.tensor([0.0, 0.5, 1.2]).view(1, 3, 1, 1).expand(2, 3, 2, 2)
+    out = frame_io.to_bgra(t)
+    assert len(out) == 2 and out[0].shape == (2, 2, 4) and out[0].dtype == np.uint8
+    assert tuple(out[0][0, 0]) == (255, 128, 0, 255)  # clamped, rounded, B G R A
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs MPS")
+def test_compiled_bgra_on_mps_matches_the_cpu():
+    t = torch.rand(2, 3, 64, 96) * 1.2 - 0.1
+    cpu = frame_io.to_bgra(t)
+    mps = frame_io.to_bgra(t.to("mps"))
+    assert all(np.array_equal(a, b) for a, b in zip(cpu, mps))
+
+
+def test_uint8_fast_path_is_contiguous():
+    frames = [np.zeros((5, 7, 3), np.uint8)]
+    assert frame_io.to_batch(frames, device="cpu", dtype=torch.float32).is_contiguous()
