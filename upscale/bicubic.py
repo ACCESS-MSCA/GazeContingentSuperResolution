@@ -28,6 +28,25 @@ class BicubicStream:
         batch = frame_io.to_batch(images, device=self.device, dtype=torch.float32)
         return frame_io.compiled(_bicubic, self.device)(batch, self.scale)
 
+    @torch.no_grad()
+    def upscale_bgra(self, images):
+        """Upscales a batch of uint8 (H, W, 3) frames straight to the BGRA NDI sends. Returns the LR
+        batch ((N, 3, h, w) float32, for upscale_region) and the (N, H, W, 4) uint8 BGRA frames,
+        both on the device. The float frames at the output size (100 MB each at 4K) are not kept."""
+        lr = frame_io.to_batch(images, device=self.device, dtype=torch.float32)
+        return lr, frame_io.to_bgra_tensor(frame_io.compiled(_bicubic, self.device)(lr, self.scale))
+
+    @torch.no_grad()
+    def upscale_region(self, lr, box):
+        """Bicubic of the LR `box` (x0, y0, x1, y1) of an (N, 3, h, w) LR batch: an (N, 3, 4 (y1 - y0),
+        4 (x1 - x0)) float tensor with the values that region has in the whole upscaled frame. It
+        upscales the box plus a 2 px margin, all that the bicubic kernel reaches."""
+        x0, y0, x1, y1 = box
+        h, w = lr.shape[-2:]
+        ax0, ay0, ax1, ay1 = max(x0 - 2, 0), max(y0 - 2, 0), min(x1 + 2, w), min(y1 + 2, h)
+        up, s = _bicubic(lr[..., ay0:ay1, ax0:ax1], self.scale), self.scale
+        return up[..., (y0 - ay0) * s:(y1 - ay0) * s, (x0 - ax0) * s:(x1 - ax0) * s]
+
     def push(self, images) -> list[np.ndarray]:
         """Upscales a batch of uint8 (H, W, 3) frames and returns them all."""
         if not images:

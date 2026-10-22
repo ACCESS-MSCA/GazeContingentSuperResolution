@@ -114,7 +114,7 @@ pulled from the Hub by `diffusers`. RIFE weights are only fetched when `k > 1`.
 | `natten_layers` | `0` | Replace this many 240-dim attention layers with NATTEN. Requires the `natten` extra; without it the pipeline prints a notice and keeps standard attention. |
 | `batch_size` | `4` | Batch size shared across SR and interpolation. Larger is markedly cheaper per frame; bounded by VRAM. |
 | `compile_decoder` | `False` | `torch.compile` the decoder. Recompiles on every new input resolution — only worth it for a fixed-resolution workload. |
-| `device` / `dtype` | auto | Defaults to CUDA with bf16 (fp16 if bf16 is unsupported), else CPU/fp32. |
+| `device` / `dtype` | auto | Defaults to CUDA with bf16 (fp16 if bf16 is unsupported), MPS with fp16, else CPU/fp32. |
 
 ## Layout
 
@@ -126,7 +126,7 @@ vsr/
   frames.py              numpy <-> tensor conversion
   padding.py             pad/unpad helpers
   weights.py             Hugging Face weight resolution
-  super_resolution/      pruned SD-2.1 UNet + half-decoder, NATTEN processor
+  super_resolution/      pruned SD-2.1 UNet + half-decoder, NATTEN processor, Core ML (Apple Neural Engine)
   interpolation/         RIFE v4.25 (inference path only)
 ```
 

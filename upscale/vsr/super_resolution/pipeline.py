@@ -29,6 +29,8 @@ class SuperResolutionPipeline:
         self.scale_factor = SCALE_FACTOR
         self._natten_applied = False
         self._log = (lambda *a: print(*a)) if verbose else (lambda *a: None)
+        self._ckpt_paths = (model_ckpt_path, decoder_ckpt_path)
+        self._neural_engine = {}  # (height, width) -> the model on the Neural Engine (coreml.py)
 
         self.model = build_model(
             model_ckpt_path, decoder_ckpt_path, self.device, self.dtype, self._log
@@ -127,14 +129,35 @@ class SuperResolutionPipeline:
         self.model.unet.set_attn_processor(new_attn_procs)
         self._natten_applied = True
 
+    def neural_engine(self, height: int, width: int):
+        """The model on the Apple Neural Engine for (B, 3, height, width) inputs (multiples of
+        PAD_DIVISOR), through Core ML (coreml.py); converted and loaded on first use per size."""
+        if (height, width) not in self._neural_engine:
+            from .coreml import CoreMLSR
+
+            self._neural_engine[height, width] = CoreMLSR(self.model, self._ckpt_paths, height, width, self._log)
+        return self._neural_engine[height, width]
+
     @torch.no_grad()
-    def __call__(self, batch: torch.Tensor) -> torch.Tensor:
-        """Super-resolves a (B, 3, H, W) float tensor in [0, 1] by 4x.
+    def neural_engine_cpu(self, batch: torch.Tensor) -> torch.Tensor:
+        """Super-resolves a (B, 3, H, W) float tensor on the CPU by 4x on the Neural Engine, and
+        returns the result on the CPU (float32). Touches no GPU state, so unlike the rest of the
+        pipeline it can run in another thread (PyTorch's MPS backend is not thread-safe)."""
+        padded, padding = pad_to_multiple(batch.to("cpu", torch.float32), PAD_DIVISOR)
+        output = self.neural_engine(*padded.shape[-2:])(padded)
+        return unpad_tensor(output, scale_padding(padding, SCALE_FACTOR))
+
+    @torch.no_grad()
+    def __call__(self, batch: torch.Tensor, neural_engine: bool = False) -> torch.Tensor:
+        """Super-resolves a (B, 3, H, W) float tensor in [0, 1] by 4x, on the pipeline's device
+        or (neural_engine=True, macOS) on the Neural Engine, for a fixed input size.
 
         Returns a (B, 3, 4H, 4W) tensor on the pipeline's device and dtype.
         """
         assert batch.ndim == 4, f"expected (B, C, H, W), got {tuple(batch.shape)}"
 
+        if neural_engine:
+            return self.neural_engine_cpu(batch).to(device=self.device, dtype=self.dtype)
         batch = batch.to(device=self.device, dtype=self.dtype)
         padded, padding = pad_to_multiple(batch, PAD_DIVISOR)
         output = self.model(padded)

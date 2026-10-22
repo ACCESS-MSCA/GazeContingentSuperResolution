@@ -30,7 +30,7 @@ Output dict:
 
 The model was trained relative to the head direction at the first predicted frame, which is not known at inference time, so `gaze` uses the latest HMD sample (33 ms earlier).
 
-Device defaults to CUDA, then MPS, then CPU. One pushed frame takes about 19 ms on MPS (M-series Mac) and 210 ms on CPU, mostly UniSal.
+Device defaults to CUDA, then MPS, then CPU. On MPS with coremltools installed (macOS), UniSal runs on the Apple Neural Engine through Core ML (`coreml.py`; converted on first use, cached in `~/.cache/gaze/`): about 4 ms per frame, float16, so the predicted gaze differs from PyTorch's by about 0.1° (at most 0.24° on real frames). Otherwise UniSal is compiled with `torch.compile` on GPUs (about 11 ms per frame on an M4, same output) and runs as is on the CPU (about 210 ms). The LSTM takes about 2–6 ms on MPS. `GazePredictor(coreml=False)` keeps PyTorch.
 
 ## Contents
 
@@ -39,6 +39,7 @@ Device defaults to CUDA, then MPS, then CPU. One pushed frame takes about 19 ms 
 | `inference.py` | `predict_gaze`, `GazePredictor`, Conv-LSTM definition, preprocessing |
 | `tracker.py` | for the stream: head pose sources (trace, live), 30 Hz scheduling per decoded frame, `ThreadedGazeTracker` (model off the stream thread) |
 | `process.py` | `ProcessPredictor`: the model in a child process, since PyTorch's MPS backend is not thread-safe |
+| `coreml.py` | UniSal on the Apple Neural Engine through Core ML |
 | `weights/behaviour_aware_lambda20_seed0.pth` / `.json` | Conv-LSTM with gaze and task heads (24,862 parameters), task-loss weight λ = 20, seed 0, and its training config |
 | `weights/unisal.pth` | frozen UniSal saliency model |
 | `unisal/` | UniSal network definition (Apache 2.0, see `unisal/LICENSE`) |

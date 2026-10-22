@@ -60,3 +60,14 @@ def test_coreml_unisal_is_close_to_the_original_pipeline(predictor):
     ref = predictor.predict(*window())
     np.testing.assert_allclose(out["offsets"], ref["offsets"], atol=0.5)  # degrees; 1 LR px is ~0.45
     np.testing.assert_allclose(out["task_probs"], ref["task_probs"], atol=0.01)
+
+
+def test_push_times_unisal_and_the_lstm_apart(predictor):
+    frames, hmd = window()
+    predictor.reset()
+    predictor.push(frames[0], hmd[0])
+    assert predictor.last_saliency_s > 0 and predictor.last_lstm_s is None  # no prediction yet
+    for f, h in zip(frames[1:], hmd[1:]):
+        predictor.push(f, h)
+    assert predictor.last_saliency_s > 0 and predictor.last_lstm_s > 0
+    predictor.reset()

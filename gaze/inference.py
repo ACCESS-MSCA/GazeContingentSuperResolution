@@ -20,6 +20,7 @@ pipeline used to train and evaluate the model.
 """
 import json
 import os
+import time
 
 import numpy as np
 import torch
@@ -150,6 +151,9 @@ class GazePredictor:
         self.model = load_gaze_model(model_path, self.device)
         self._sal = []
         self._hmd = []
+        # seconds the last push() spent in each model: UniSal on the new frame, and the LSTM's
+        # prediction (None until 15 frames are buffered)
+        self.last_saliency_s = self.last_lstm_s = None
 
     @torch.no_grad()
     def saliency(self, frames):
@@ -196,14 +200,21 @@ class GazePredictor:
 
     def push(self, frame, hmd_sample):
         """Adds one frame and its HMD (azimuth, elevation); returns a prediction, or None for the first 14."""
+        start = time.perf_counter()
         self._sal.append(self.saliency([frame])[0])
+        if self._sal[-1].device.type == "mps":
+            torch.mps.synchronize()  # so the saliency time is not counted as the LSTM's
+        self.last_saliency_s, self.last_lstm_s = time.perf_counter() - start, None
         self._hmd.append(hmd_sample)
         if len(self._sal) > PAST:
             self._sal.pop(0)
             self._hmd.pop(0)
         if len(self._sal) < PAST:
             return None
-        return self.predict_from_saliency(torch.stack(self._sal), self._hmd)
+        start = time.perf_counter()
+        out = self.predict_from_saliency(torch.stack(self._sal), self._hmd)
+        self.last_lstm_s = time.perf_counter() - start
+        return out
 
     def reset(self):
         self._sal, self._hmd = [], []

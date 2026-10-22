@@ -6,6 +6,7 @@ import torch
 from . import frames as frame_io
 from . import weights
 from .scheduling import group_gaps_by_timesteps, plan_schedule
+from .super_resolution.model import PAD_DIVISOR
 
 # The two model stages are imported inside __init__ rather than here: they pull
 # in diffusers (and optionally natten), which is a heavy import to pay for
@@ -96,6 +97,18 @@ class VSRPipeline:
             model_dir = weights.ensure_interpolation_weights(self._cache_dir)
         self.interpolation = InterpolationPipeline(model_dir=model_dir, device=self.device)
 
+    def run_sr_cpu(self, frames: torch.Tensor) -> list[torch.Tensor]:
+        """run_sr on the Neural Engine with CPU tensors in and out: (M, C, H, W) float -> M
+        (1, C, 4H, 4W) float32 tensors on the CPU. Touches no GPU state, so it can run in another
+        thread while the GPU does other work (see super_resolution/pipeline.py neural_engine_cpu)."""
+        produced = self.sr.neural_engine_cpu(frames)
+        return [produced[i : i + 1] for i in range(produced.shape[0])]
+
+    def load_neural_engine(self, height: int, width: int) -> None:
+        """Converts and loads the SR model on the Neural Engine for (height, width) LR inputs
+        now, rather than on the first run_sr(..., neural_engine=True) call."""
+        self.sr.neural_engine(*(-(-v // PAD_DIVISOR) * PAD_DIVISOR for v in (height, width)))
+
     @torch.no_grad()
     def __call__(self, images, k: int | None = None) -> list[np.ndarray]:
         """Super-resolves a clip.
@@ -139,15 +152,16 @@ class VSRPipeline:
 
         return VSRStream(self, k=k)
 
-    def run_sr(self, frames: torch.Tensor) -> list[torch.Tensor]:
-        """Super-resolves an (M, C, H, W) tensor, in batches of batch_size.
+    def run_sr(self, frames: torch.Tensor, neural_engine: bool = False) -> list[torch.Tensor]:
+        """Super-resolves an (M, C, H, W) tensor, in batches of batch_size, on the device or
+        (neural_engine=True) on the Apple Neural Engine (see super_resolution/coreml.py).
 
         Returns M separate (1, C, H, W) tensors. Shared by the whole-clip and
         streaming paths so both get identical batching.
         """
         outputs: list[torch.Tensor] = []
         for start in range(0, frames.shape[0], self.batch_size):
-            produced = self.sr(frames[start : start + self.batch_size])
+            produced = self.sr(frames[start : start + self.batch_size], neural_engine=neural_engine)
             outputs.extend(produced[i : i + 1] for i in range(produced.shape[0]))
         return outputs
 

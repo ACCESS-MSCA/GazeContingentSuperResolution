@@ -89,3 +89,18 @@ def test_interpolated_motion_tracks_the_timestep():
     # RIFE underestimates flow on hard-edged synthetic content; allow real slack.
     for position, expected in zip(positions, (36.0, 46.0, 56.0)):
         assert abs(position - expected) < 5.0
+
+
+def test_one_timestep_per_pair_matches_a_call_per_timestep(tmp_path):
+    """All the frames between one pair of keyframes in one batched call give the same frames as
+    one call per timestep: RIFE has no layer that mixes the frames of a batch."""
+    pipeline = InterpolationPipeline.__new__(InterpolationPipeline)
+    pipeline.device = torch.device("cpu")
+    pipeline.model = RifeModel(torch.device("cpu"))
+    torch.manual_seed(0)
+    img0, img1 = torch.rand(1, 3, 64, 96), torch.rand(1, 3, 64, 96)
+    times = [0.2, 0.4, 0.6, 0.8]
+    batched = pipeline(img0.repeat(4, 1, 1, 1), img1.repeat(4, 1, 1, 1), timestep=times)
+    looped = torch.cat([pipeline(img0, img1, timestep=t) for t in times])
+    assert batched.shape == looped.shape == (4, 3, 64, 96)
+    assert torch.allclose(batched, looped, atol=1e-5)

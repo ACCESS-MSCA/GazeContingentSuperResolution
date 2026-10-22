@@ -66,7 +66,7 @@ def stubbed(monkeypatch, tmp_path):
 
 def _run(**options):
     status = StreamStatus()
-    opts = StreamOptions(video="clip.mp4", once=True, device="cpu", **options)
+    opts = StreamOptions(video="clip.mp4", device="cpu", **options)
     runner.run_stream(opts, LiveSettings(), status)
     return FakeOutput.instance, status.snapshot()
 
@@ -96,7 +96,13 @@ def test_foveated_with_rife_sends_every_frame_in_order(stubbed):
     assert status["state"] == "done"
     # keyframes 0, 3, ..., 18 and the clip's last frame 19: 8 keyframe crops (one more SR if the
     # crop moves when the first prediction arrives); RIFE makes the other 12
-    assert sum(stubbed.sr.calls) >= 8 and len(stubbed.interpolation.calls) == 12
+    assert sum(stubbed.sr.calls) >= 8 and sum(len(t) for _, t in stubbed.interpolation.calls) == 12
+
+
+def test_the_clip_plays_once(stubbed):
+    out, status = _run(sources=["source"])  # the stub clip has 30 frames; no --frames
+    assert len(out.sent) == 30 and status["state"] == "done"
+    assert status["engines"] == {"device": "cpu", "fovea_sr": None, "overlap": False}
 
 
 def test_foveated_without_sr_is_bicubic_with_the_gaze(stubbed):

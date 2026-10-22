@@ -20,10 +20,20 @@ class _SRStub:
 
     def __init__(self):
         self.calls = []
+        self.neural_engine_calls = 0  # batches sent to the Neural Engine
+        self.neural_engine_sizes = []  # sizes loaded there
 
-    def __call__(self, batch):
+    def __call__(self, batch, neural_engine=False):
         self.calls.append(batch.shape[0])
+        self.neural_engine_calls += neural_engine
         return batch.repeat_interleave(4, dim=-2).repeat_interleave(4, dim=-1)
+
+    def neural_engine(self, height, width):
+        self.neural_engine_sizes.append((height, width))
+
+    def neural_engine_cpu(self, batch):
+        assert batch.device.type == "cpu"
+        return self(batch.float(), neural_engine=True)
 
 
 class _InterpolationStub:
@@ -31,8 +41,9 @@ class _InterpolationStub:
         self.calls = []
 
     def __call__(self, img0, img1, timestep, scale=1.0):
-        self.calls.append((img0.shape[0], timestep))
-        return img0 * (1.0 - timestep) + img1 * timestep
+        self.calls.append((img0.shape[0], timestep))  # timestep: a float, or a list, one per pair
+        t = timestep if isinstance(timestep, float) else torch.tensor(timestep).view(-1, 1, 1, 1)
+        return img0 * (1.0 - t) + img1 * t
 
 
 def _build(k, batch_size=4):

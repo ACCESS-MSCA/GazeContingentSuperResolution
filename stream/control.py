@@ -53,16 +53,21 @@ class StreamOptions:
     # prediction, real time), the side of the LR square it upscales, whether that region is
     # outlined, and whether the gaze prediction is drawn.
     fovea_sr: bool = True
-    fovea: int = 96
+    fovea: int = 64
     # (foveated only) 1: SR on every frame's crop; k > 1: SR on every k-th frame's crop, RIFE in
     # between, with the crop held still for each stretch of k frames (see upscale/foveated.py).
-    fovea_k: int = 1
+    fovea_k: int = 5
     fovea_outline: bool = True
     fovea_gaze: bool = True
+    # (foveated only) run the SR model on the Apple Neural Engine (macOS with coremltools, on
+    # MPS), off the GPU; otherwise, or off, on the device (upscale/vsr/super_resolution/coreml.py).
+    fovea_ane: bool = True
+    # (foveated, Neural Engine, fovea_k > 1) upscale the next stretch on the Neural Engine while
+    # the GPU finishes the current one: faster, but frames are held fovea_k frames longer.
+    fovea_overlap: bool = True
     batch: int = 2
     start: float = 0.0
     frames: int | None = None
-    once: bool = False
     device: str | None = None
     name: str = "StreamNDI"
 
@@ -104,8 +109,8 @@ class StreamOptions:
             raise ValueError("k, foveated k, batch and frames must be at least 1; start at least 0")
         if opts.fovea < 16:
             raise ValueError("fovea must be at least 16 LR pixels")
-        opts.once, opts.fovea_outline, opts.fovea_gaze = bool(opts.once), bool(opts.fovea_outline), bool(opts.fovea_gaze)
-        opts.fovea_sr = bool(opts.fovea_sr)
+        opts.fovea_outline, opts.fovea_gaze = bool(opts.fovea_outline), bool(opts.fovea_gaze)
+        opts.fovea_sr, opts.fovea_ane, opts.fovea_overlap = bool(opts.fovea_sr), bool(opts.fovea_ane), bool(opts.fovea_overlap)
         opts.name = str(opts.name).strip() or cls.name
         return opts
 

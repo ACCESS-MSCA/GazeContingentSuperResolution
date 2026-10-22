@@ -5,7 +5,6 @@ control page (control_page.controller.StreamController).
 """
 
 import functools
-import itertools
 import threading
 import time
 from collections import deque
@@ -29,6 +28,14 @@ def default_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def _sync(device):
+    """Waits for the work queued on `device` (MPS or CUDA; nothing to wait for on the CPU)."""
+    if device == "mps":
+        torch.mps.synchronize()
+    elif device == "cuda":
+        torch.cuda.synchronize()
 
 
 def _vsr_pipeline(cache, device, k):
@@ -56,7 +63,7 @@ def _cached(cache, key, factory):
 
 
 def run_stream(opts, live=None, status=None, stop=None, cache=None):
-    """Streams one video with `opts` until it ends (--once / --frames), Ctrl-C, or `stop` is set.
+    """Streams one video with `opts` once, until it ends (or --frames), Ctrl-C, or `stop` is set.
 
     Every enabled NDI source (opts.sources) is made from the same decoded frames and they
     are sent in lockstep: a frame goes out on all sources once each has it, so the run goes
@@ -70,12 +77,11 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     from ndi.overlay import draw_fovea, draw_gaze_prediction
     from upscale.bicubic import BicubicStream
     from upscale.foveated import FoveatedStream
-    from upscale.vsr import frames as frame_io
 
     live = live or LiveSettings()
     status = status or StreamStatus()
     stop = stop or threading.Event()
-    status.update(state="loading", error=None, sent=0, fps=0.0, gaze=None, gaze_info=None, head=None, perf=None,
+    status.update(state="loading", error=None, sent=0, fps=0.0, gaze=None, gaze_info=None, head=None, perf=None, fovea_horizon=None, engines=None,
                   options=opts.to_dict())
     enabled = set(opts.sources)
 
@@ -93,7 +99,8 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     sizes["source"] = (lr_w, lr_h)
     if crop:
         sizes.update(source=(crop, crop), bicubic=(crop * SCALE, crop * SCALE), vsr=(crop * SCALE, crop * SCALE))
-    status.update(size=[hr_w, hr_h], lr_size=[lr_w, lr_h], sizes={k: list(v) for k, v in sizes.items()})
+    status.update(size=[hr_w, hr_h], lr_size=[lr_w, lr_h], sizes={k: list(v) for k, v in sizes.items()},
+                  engines={"device": device, "fovea_sr": None, "overlap": False})  # where each step runs (the page's chips)
 
     print(f"Source  : {opts.video}")
     print(f"Size    : LR {lr_w}x{lr_h} -> HR {hr_w}x{hr_h} @ {float(fps):.3f} fps")
@@ -102,7 +109,7 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
     # --- Upscalers ------------------------------------------------------------
     # Each exposes push()/flush() and returns frames in order. Bicubic is computed once and
     # shared by the bicubic and foveated sources, on the device: bicubic and foveated frames
-    # stay there until they are converted to BGRA for NDI (frame_io.to_bgra).
+    # stay there until they are converted to BGRA for NDI (BicubicStream.upscale_bgra).
     upscalers = {}
     # bicubic's own frames are only needed by its source, and by foveated with SR off
     bicubic_frames = "bicubic" in enabled or ("foveated" in enabled and not opts.fovea_sr)
@@ -110,14 +117,28 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         upscalers["bicubic"] = BicubicStream(scale=SCALE, device=device)
     if "foveated" in enabled and not opts.fovea_sr:
         print("Foveated: SR off, bicubic" + (" + gaze prediction" if opts.fovea_gaze else ""))
+    # frames the foveated source holds after a frame is decoded (its stretch of fovea_k frames, and
+    # one stretch more with overlap), which sets how far ahead its gaze step is
+    fovea_hold = opts.fovea_k
     if "foveated" in enabled and opts.fovea_sr:
         # The SR model on a square around the gaze, on top of bicubic: on every frame (fovea_k=1),
         # or on every fovea_k-th frame with RIFE in between (the pipeline then loads RIFE too).
         sr = _vsr_pipeline(cache, device, opts.fovea_k)
-        upscalers["foveated"] = FoveatedStream(sr, fovea=opts.fovea, device=device, k=opts.fovea_k, bgra=True)
+        # On MPS the SR model can run on the Neural Engine instead, leaving the GPU to RIFE and
+        # the full-frame work (macOS with coremltools; super_resolution/coreml.py).
+        from upscale.vsr.super_resolution import coreml
+        ane = opts.fovea_ane and device == "mps" and coreml.available()
+        # With overlap the Neural Engine upscales the next stretch while the GPU finishes this one.
+        overlap = ane and opts.fovea_overlap and opts.fovea_k > 1
+        fovea_hold = opts.fovea_k * (2 if overlap else 1)
+        upscalers["foveated"] = FoveatedStream(sr, fovea=opts.fovea, device=device, k=opts.fovea_k, bgra=True, ane=ane, overlap=overlap)
         extras = [x for x, on in (("outline", opts.fovea_outline), ("gaze prediction", opts.fovea_gaze)) if on]
         print(f"Foveated: SR on {opts.fovea}x{opts.fovea} LR px at the gaze"
+              + (" on the Neural Engine" + (", overlapped with the GPU" if overlap else "") if ane else "")
               + (f", every {opts.fovea_k}{'nd' if opts.fovea_k == 2 else 'rd' if opts.fovea_k == 3 else 'th'} frame + RIFE" if opts.fovea_k > 1 else "") + (f" + {', '.join(extras)}" if extras else ""))
+        upscalers["foveated"].prepare(lr_w, lr_h)
+        status.update(engines={"device": device, "fovea_sr": "npu" if ane else "cpu" if device == "cpu" else "gpu",
+                               "overlap": overlap})  # the foveated SR's own engine
     if "vsr" in enabled:
         # The SR model on the whole frame (and RIFE when k > 1); weights download on first
         # run. The stream keeps keyframe spacing across push() calls, so frames can be fed
@@ -143,8 +164,10 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         head_source = live.head_source
         # The tracker's own step does not matter here: the source picks its step from the full path.
         tracker = ThreadedGazeTracker(fps, head_source, step=FUTURE, start=opts.start, predictor=predictor)
-        fov_h = stretch_horizon(opts.fovea_k, fps)
-        print(f"Gaze    : head {live.head_mode}, foveated horizon {fov_h} (k={opts.fovea_k})")
+        fov_h = stretch_horizon(fovea_hold, fps)
+        status.update(fovea_horizon=fov_h)
+        print(f"Gaze    : head {live.head_mode}, foveated horizon {fov_h} (k={opts.fovea_k}"
+              + (", overlap" if fovea_hold > opts.fovea_k else "") + ")")
 
     # --- NDI output -----------------------------------------------------------
     # Audio is decoded whole, then trimmed so it lines up with --start.
@@ -183,8 +206,11 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
             if batch is None:
                 out = up.flush()
             elif key == "bicubic":
-                bic = up.upscale(batch)
-                out = frame_io.to_bgra(bic) if bicubic_frames else [None] * len(batch)
+                bic = up.upscale_bgra(batch)  # (LR batch, BGRA frames), both on the device
+                # Wait for the GPU, so bicubic's time is its own: otherwise it only counts queueing
+                # the work, plus waits for whatever was queued before it (more of it at higher k).
+                _sync(device)
+                out = list(bic[1].cpu().numpy()) if bicubic_frames else [None] * len(batch)
             elif key == "foveated":
                 # blends into bicubic's frames instead of upscaling them again
                 out = up.push(batch, gazes, base=bic)
@@ -211,7 +237,8 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         r = rates.update(
             now, sent=sent, idle_s=output.idle_s, stream_cpu_s=time.thread_time(), process_cpu_s=time.process_time(),
             predictions=g.get("predictions"), model_s=g.get("model_s"), roundtrip_s=g.get("roundtrip_s"),
-            worker_cpu_s=g.get("worker_cpu_s"), child_cpu_s=g.get("child_cpu_s"), **counters,
+            worker_cpu_s=g.get("worker_cpu_s"), child_cpu_s=g.get("child_cpu_s"),
+            saliency_s=g.get("saliency_s"), lstm_s=g.get("lstm_s"), lstm_n=g.get("lstm_n"), **counters,
         )
         if r is None:
             return
@@ -233,6 +260,8 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
                            stage: ms_per(f"fov_{stage}_s", "fov_n") for stage in ("sr", "rife", "blend")}},
             "gaze": None if not tracker else {
                 "rate": r.get("predictions"), "model_ms": ms_per("model_s", "predictions"),
+                # the two models apart: UniSal per sample, the LSTM per prediction
+                "saliency_ms": ms_per("saliency_s", "predictions"), "lstm_ms": ms_per("lstm_s", "lstm_n"),
                 "roundtrip_ms": ms_per("roundtrip_s", "predictions"),
                 "lag_ms": None if lag is None else lag * 1000 / MODEL_HZ, "queued": g["queued"], "dropped": g["dropped"]},
             # CPU: seconds of CPU per second (1.0 = one core); the process figure includes all its threads
@@ -283,56 +312,41 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
                 print(f"{sent} frames sent ({sent / elapsed:.2f} fps)")
 
     # --- Main loop: decode -> upscale -> send ---------------------------------
-    # Each pass plays the clip once; without --once it loops forever.
-    passes = range(1) if opts.once else itertools.count()
-    remaining = opts.frames
+    # The clip plays once, from --start, up to --frames frames.
     status.update(state="streaming")
 
     with output:
         try:
-            for _ in passes:
-                batch, batch_gazes = [], []
-                read = 0
-                if tracker:
-                    tracker.reset()
-                for frame in read_rgb_frames(opts.video, remaining, opts.start):
-                    if stop.is_set():
-                        break
-                    read += 1
-                    batch.append(frame)
-                    info, points = None, {}
-                    if tracker:
-                        if live.head_source is not head_source:
-                            head_source = live.head_source
-                            tracker.set_source(head_source)
-                        tracker.update(frame)
-                        info = tracker.latest()[1]
-                        if info:  # the foveated source's point: the step at the end of its stretch
-                            points = {"foveated": info["path"][fov_h - 1]}
-                        status.update(head=tracker.trace.pose_at(opts.start + tracker.frame_idx / float(fps)))
-                    pending.append((frame, info, points))
-                    batch_gazes.append(points.get("foveated"))
-                    if len(batch) == opts.batch:
-                        # vsr's push() returns only the frames that are ready: a frame
-                        # between keyframes waits until the next keyframe is upscaled.
-                        upscale(batch, batch_gazes)
-                        batch, batch_gazes = [], []
+            batch, batch_gazes = [], []
+            read = 0
+            for frame in read_rgb_frames(opts.video, opts.frames, opts.start):
                 if stop.is_set():
                     break
-                if read == 0:
-                    print("No frames decoded (is --start past the end of the video?).")
-                    break
+                read += 1
+                batch.append(frame)
+                info, points = None, {}
+                if tracker:
+                    if live.head_source is not head_source:
+                        head_source = live.head_source
+                        tracker.set_source(head_source)
+                    tracker.update(frame)
+                    info = tracker.latest()[1]
+                    if info:  # the foveated source's point: the step at the end of its stretch
+                        points = {"foveated": info["path"][fov_h - 1]}
+                    status.update(head=tracker.trace.pose_at(opts.start + tracker.frame_idx / float(fps)))
+                pending.append((frame, info, points))
+                batch_gazes.append(points.get("foveated"))
+                if len(batch) == opts.batch:
+                    # vsr's push() returns only the frames that are ready: a frame
+                    # between keyframes waits until the next keyframe is upscaled.
+                    upscale(batch, batch_gazes)
+                    batch, batch_gazes = [], []
+            if read == 0:
+                print("No frames decoded (is --start past the end of the video?).")
+            elif not stop.is_set():
                 if batch:
                     upscale(batch, batch_gazes)
-                # End of the clip: drain the tail, then rewind audio for the next pass.
-                upscale()
-                output.restart()
-
-                # --frames is a total across passes; stop once it is reached.
-                if opts.frames is not None:
-                    remaining = opts.frames - sent
-                    if remaining <= 0:
-                        break
+                upscale()  # end of the clip: the frames still held (vsr, foveated with k > 1)
 
             elapsed = time.monotonic() - started
             print(f"Done: {sent} frames sent in {elapsed:.1f}s ({sent / max(elapsed, 1e-9):.2f} fps)")

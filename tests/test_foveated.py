@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-pytest.importorskip("torch")
+torch = pytest.importorskip("torch")
 
 from upscale.foveated import FoveatedStream, fovea_box, fovea_mask
 
@@ -99,7 +99,8 @@ def test_keyframes_and_rife_with_a_still_gaze():
     assert len(boxes) == 9 and len(set(boxes)) == 1
     # keyframes 0, 3, 6 and the clip's last frame 8; the crop never moves, so each SR'd once
     assert stream.sr_frames == 4 and stream.rife_frames == 5 and stream.frames == 9
-    assert [t for _, t in pipeline.interpolation.calls] == [1 / 3, 2 / 3, 1 / 3, 2 / 3, 1 / 2]
+    # one batched call per stretch, each crop at its place in time
+    assert [t for _, t in pipeline.interpolation.calls] == [[1 / 3, 2 / 3], [1 / 3, 2 / 3], [1 / 2]]
 
 
 def test_frames_wait_for_their_closing_keyframe():
@@ -125,13 +126,73 @@ def test_k_above_one_needs_the_interpolation_model():
         FoveatedStream(FakeSR(), fovea=32, k=2)
 
 
-def test_bgra_output_and_a_shared_bicubic_base_left_unchanged():
+def test_bgra_output_blends_into_the_shared_bicubic_frames():
     from upscale.bicubic import BicubicStream
     stream = FoveatedStream(FakeSR(), fovea=32, bgra=True)
     frames = [np.full((64, 96, 3), (10, 20, 30), np.uint8)]
-    base = BicubicStream().upscale(frames)
-    before = base.clone()
+    lr, bgra = base = BicubicStream().upscale_bgra(frames)
+    sent_by_bicubic = bgra[0].numpy().copy()  # what the bicubic source sends, before foveated
     out = stream.push(frames, [(0.5, 0.5)], base=base)
     assert out[0].shape == (256, 384, 4) and out[0].dtype == np.uint8
     assert tuple(out[0][0, 0]) == (30, 20, 10, 255)  # B, G, R, A outside the fovea
-    assert (base == before).all()  # the bicubic source can still send it as is
+    assert np.array_equal(bgra[0].numpy(), out[0])  # blended into the shared frame in place
+    assert not np.array_equal(sent_by_bicubic, out[0])  # (the bicubic source copied it first)
+
+
+def test_region_bicubic_matches_the_whole_frame():
+    from upscale.bicubic import BicubicStream
+    up = BicubicStream()
+    lr = torch.rand(1, 3, 40, 60)
+    whole = torch.nn.functional.interpolate(lr, scale_factor=4, mode="bicubic", align_corners=False)
+    for x0, y0, x1, y1 in ((10, 8, 26, 24), (0, 0, 16, 16), (44, 24, 60, 40)):  # inside, and at the corners
+        region = up.upscale_region(lr, (x0, y0, x1, y1))
+        assert torch.allclose(region, whole[..., 4 * y0:4 * y1, 4 * x0:4 * x1], atol=1e-5)
+
+
+def test_ane_sends_the_crops_to_the_neural_engine():
+    from test_pipeline_routing import _build
+    pipeline = _build(3)
+    stream = FoveatedStream(pipeline, fovea=40, k=3, ane=True)
+    stream.prepare(64, 48)  # loads it for the crop size, padded to a multiple of 16
+    assert pipeline.sr.neural_engine_sizes == [(48, 48)]
+    out, _ = _push_all(stream, 7, lambda i: (0.5, 0.5))
+    assert len(out) == 7
+    assert pipeline.sr.neural_engine_calls == len(pipeline.sr.calls) == 3  # keyframes 0, 3, 6
+
+
+def test_without_ane_nothing_goes_to_the_neural_engine():
+    from test_pipeline_routing import _build
+    pipeline = _build(3)
+    stream = FoveatedStream(pipeline, fovea=32, k=3)
+    stream.prepare(64, 64)
+    _push_all(stream, 4, lambda i: None)
+    assert pipeline.sr.neural_engine_calls == 0 and pipeline.sr.neural_engine_sizes == []
+
+
+def test_overlap_gives_the_same_frames_one_stretch_later():
+    from test_pipeline_routing import _build
+    gaze_of = lambda i: (0.1, 0.5) if i <= 4 else (0.9, 0.5)  # the crop moves once
+    plain = FoveatedStream(_build(3), fovea=16, k=3, ane=True)
+    overlapped = FoveatedStream(_build(3), fovea=16, k=3, ane=True, overlap=True)
+    out_plain, boxes_plain = _push_all(plain, 10, gaze_of)
+    out_overlap, boxes_overlap = _push_all(overlapped, 10, gaze_of)
+    assert boxes_overlap == boxes_plain
+    assert all(np.array_equal(a, b) for a, b in zip(out_overlap, out_plain)) and len(out_overlap) == 10
+    assert overlapped.sr_frames == plain.sr_frames
+    assert overlapped.sr.sr.neural_engine_calls == plain.sr.sr.neural_engine_calls
+
+
+def test_overlap_holds_frames_until_the_next_stretch_has_started():
+    from test_pipeline_routing import _build
+    stream = FoveatedStream(_build(3), fovea=32, k=3, ane=True, overlap=True)
+    frames = [np.full((64, 64, 3), i, np.uint8) for i in range(7)]
+    assert stream.push(frames[:2], [None, None]) == []  # keyframe 0 started, not finished
+    assert len(stream.push(frames[2:4], [None, None])) == 1  # keyframe 3 started: 0 is done
+    assert len(stream.push(frames[4:7], [None] * 3)) == 3  # keyframe 6 started: 1-3 are done
+    assert len(stream.flush()) == 3  # 4-6
+
+
+def test_overlap_needs_the_neural_engine():
+    from test_pipeline_routing import _build
+    with pytest.raises(ValueError):
+        FoveatedStream(_build(3), fovea=32, k=3, overlap=True)

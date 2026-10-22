@@ -8,18 +8,27 @@
   :root {
     --bg: #f5f5f4; --panel: #ffffff; --text: #1c1917; --muted: #78716c; --border: #e7e5e4;
     --accent: #2563eb; --accent-text: #ffffff; --gaze: #16a34a; --head: #d97706; --danger: #dc2626;
-    --pad: #fafaf9; --grid: #e7e5e4;
+    --pad: #fafaf9; --grid: #e7e5e4; --cpu: #64748b; --npu: #9333ea;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #0c0a09; --panel: #1c1917; --text: #f5f5f4; --muted: #a8a29e; --border: #292524;
-      --accent: #3b82f6; --gaze: #22c55e; --head: #f59e0b; --danger: #f87171; --pad: #141210; --grid: #292524; }
+      --accent: #3b82f6; --gaze: #22c55e; --head: #f59e0b; --danger: #f87171; --pad: #141210; --grid: #292524;
+      --cpu: #94a3b8; --npu: #c084fc; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  main { max-width: 1280px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; align-items: start;
-    grid-template-columns: 330px minmax(0, 1fr); }
-  .content { display: grid; gap: 16px; align-content: start; min-width: 0; }
+  main { max-width: 1600px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; align-items: start;
+    grid-template-columns: minmax(0, 1fr); }
+  .top-row { display: grid; gap: 16px; align-items: stretch; grid-template-columns: minmax(0, 1fr) 380px; }
+  /* Head as tall as Performance beside it: Live / Trace and the trace in its title row, and the pad
+     taking the height left (it maps the whole range whatever its shape) */
+  .head-card { display: flex; flex-direction: column; }
+  .head-card .card-head h2 { margin: 0 4px 0 0; }
+  .head-card .card-head select { flex: 1; width: 0; min-width: 0; }
+  .head-card .pad { flex: 1 1 auto; aspect-ratio: auto; min-height: 110px; margin-top: 0; }
+  .head-card .row { margin-top: 10px; }
+  .pipeline-card { grid-column: 1 / -1; min-width: 0; }  /* the whole page width */
   .perf { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px 20px; }
   .perf h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 6px; }
   .perf dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; font-size: 13px; }
@@ -45,38 +54,47 @@
   .area + .area { margin-top: 14px; }
   .area.head { --tone: var(--head); }
   .area-title { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--tone); }
-  svg.pipeline { display: block; width: 100%; min-width: 640px; height: auto; }
+  /* --k: 1 / the diagram's scale when it is drawn larger than its viewBox (fitDiagramText), so its text
+     is no bigger than the Performance card's */
+  svg.pipeline { --k: 1; display: block; width: 100%; min-width: 640px; height: auto; }
   svg.pipeline .stage rect { fill: var(--pad); stroke: var(--border); stroke-width: 1.2; }
   svg.pipeline .stage.out rect { stroke: var(--gaze); }
-  svg.pipeline .t { font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--text); }
-  svg.pipeline .d { font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--muted);
+  svg.pipeline .t { font: 600 calc(13px * var(--k)) -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--text); }
+  svg.pipeline .d { font: calc(11px * var(--k)) -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--muted);
     font-variant-numeric: tabular-nums; }
   svg.pipeline .d.c { text-anchor: middle; }
   svg.pipeline .d.end { text-anchor: end; }
   /* fps chip in a processing box's top-right corner: green keeps up with the video, amber is slower */
   svg.pipeline .chip rect { fill: color-mix(in srgb, var(--gaze) 16%, transparent); stroke: none; }
-  svg.pipeline .chip text { font: 600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  svg.pipeline .chip text { font: 600 calc(10px * var(--k)) -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     fill: var(--gaze); text-anchor: middle; font-variant-numeric: tabular-nums; }
   svg.pipeline .chip.slow rect { fill: color-mix(in srgb, var(--head) 20%, transparent); }
   svg.pipeline .chip.slow text { fill: var(--head); }
   /* a required rate, not a measurement */
   svg.pipeline .chip.fixed rect { fill: color-mix(in srgb, var(--muted) 16%, transparent); }
   svg.pipeline .chip.fixed text { fill: var(--muted); }
+  /* where a step runs, in the row under its box's title: CPU, GPU or NPU (the Apple Neural Engine), and in which thread or process */
+  svg.pipeline .unit { --unit: var(--cpu); }
+  svg.pipeline .unit.gpu { --unit: var(--accent); }
+  svg.pipeline .unit.npu { --unit: var(--npu); }
+  svg.pipeline .unit rect { fill: color-mix(in srgb, var(--unit) 16%, transparent); stroke: none; }
+  svg.pipeline .unit .u { font: 700 calc(9.5px * var(--k)) -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--unit);
+    text-anchor: middle; letter-spacing: .04em; }
   svg.pipeline .flow { stroke: var(--muted); stroke-width: 1.5; fill: none; }
   svg.pipeline .head { fill: var(--muted); }
   svg.pipeline .off { opacity: .3; }
   /* the stages that make up video super-resolution, framed together */
   svg.pipeline .group { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 4; }
-  svg.pipeline .group-t { font: 700 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--muted); letter-spacing: .04em; }
+  svg.pipeline .group-t { font: 700 calc(11px * var(--k)) -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--muted); letter-spacing: .04em; }
   svg.pipeline .overlay-tick { margin: 0; width: 9px; height: 9px; display: block; }  /* an overlay's checkbox, beside its arrow */
   /* an option field inside a diagram (crop, SR area) */
-  svg.pipeline .svg-field { display: flex; flex-direction: row; white-space: nowrap; align-items: center; gap: 4px; font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--muted); }
+  svg.pipeline .svg-field { display: flex; flex-direction: row; white-space: nowrap; align-items: center; gap: 4px; font: calc(11px * var(--k)) -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--muted); }
   svg.pipeline .svg-field input { width: 46px; height: 17px; padding: 0 4px; font: inherit; }
-  svg.pipeline .svg-field button.clear { padding: 0 5px; font-size: 11px; line-height: 15px; font-weight: 500; }
+  svg.pipeline .svg-field button.clear { padding: 0 5px; font-size: calc(11px * var(--k)); line-height: 15px; font-weight: 500; }
   svg.pipeline .svg-field button.clear[hidden] { display: none; }
-  svg.pipeline .every-pick { width: 100%; height: 19px; padding: 0 4px; font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  svg.pipeline .every-pick { width: 100%; height: 19px; padding: 0 4px; font: calc(11px * var(--k)) -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--panel); border-radius: 5px; }
-  svg.pipeline .video-pick { width: 100%; height: 19px; padding: 0 4px; font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  svg.pipeline .video-pick { width: 100%; height: 19px; padding: 0 4px; font: calc(11px * var(--k)) -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--panel); border-radius: 5px; }
   /* play/stop on each NDI box: plays that source alone; stops the stream while it runs */
   svg.pipeline .solo { cursor: pointer; }
@@ -87,8 +105,13 @@
   svg.pipeline .solo.playing .i-stop { display: inline; }
   svg.pipeline .solo.disabled { opacity: .35; pointer-events: none; }
   svg.pipeline .off .solo { pointer-events: auto; }  /* a greyed-out source can still be played alone */
-  /* Left panel: stream options, then the NDI streams. */
-  nav.sidebar { display: grid; gap: 16px; }
+  /* NDI streams, in the header on the right: one compact chip per source */
+  .ndi-bar { margin-left: auto; position: relative; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ndi-bar h2 { margin: 0; }
+  .ndi-bar .sources { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ndi-bar .sources li { grid-template-columns: 8px auto auto auto; padding: 3px 10px; gap: 0 8px; }
+  .ndi-bar .sources .host, .ndi-bar .badge { grid-column: auto; }
+  .ndi-bar .info-text { top: 34px; left: auto; right: 0; width: min(420px, 90vw); }
   .sources { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
   .sources li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 2px 8px; align-items: center;
     padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); }
@@ -144,9 +167,6 @@
   .seg button { flex: 1; border: 0; border-radius: 0; font-weight: 500; }
   .seg button.on { background: var(--accent); color: var(--accent-text); }
   .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
-  /* One control row of the same height above each box, so the pad and the frame line up. */
-  .controls { display: flex; gap: 8px; align-items: center; min-height: 36px; }
-  .controls select { flex: 1; width: 0; }  /* shrinks instead of wrapping, so both rows stay one line */
   /* The pad and the frame preview have the stream's frame shape (16:9 until a stream reports its size). */
   .frame { aspect-ratio: var(--frame-aspect, 16 / 9); }
   .pad { position: relative; margin-top: 12px; border: 1px solid var(--border);
@@ -161,8 +181,9 @@
   kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
   /* Narrower: Stream on top, the two gaze cards side by side below it. */
   /* Narrower: the left panel stays, Head and Predicted gaze stack beside it; phones stack everything. */
-  @media (max-width: 1000px) { main { grid-template-columns: 310px minmax(0, 1fr); } }
-  @media (max-width: 680px) { main { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 1000px) { .top-row { grid-template-columns: minmax(0, 1fr) 300px; } }
+  @media (max-width: 680px) { .top-row { grid-template-columns: minmax(0, 1fr); }
+    .head-card .pad { flex: none; aspect-ratio: var(--frame-aspect, 16 / 9); } }  /* stacked: the frame's shape again */
 </style>
 </head>
 <body>
@@ -171,40 +192,21 @@
     <h1>Stream control</h1>
     <span id="state" class="pill">idle</span>
     <span id="stats" class="stats"></span>
-  </header>
-
-  <nav class="sidebar" aria-label="NDI streams and head control">
-    <section>
-      <div class="card-head"><h2>NDI streams</h2><button class="icon" id="monitor" title="Open NDI Video Monitor" aria-label="Open NDI Video Monitor"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 14h5M8 11.5V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><button class="info" aria-label="About NDI streams" aria-expanded="false" aria-controls="info-ndi"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
+    <!-- NDI streams on the network, beside the title (no card) -->
+    <div class="ndi-bar">
+      <h2>NDI streams</h2>
       <ul class="sources" id="ndi"></ul>
       <p class="empty" id="ndiEmpty">No NDI streams on the network.</p>
       <p class="note info-text" id="info-ndi" hidden>Sources on the network, refreshed 4×/s. A stream appears about 2 s
         after it starts and disappears when it stops. This run's own sources are highlighted.
         The screen button opens NDI Video Monitor on the computer running the stream; pick <span id="sources">the stream</span> in it.</p>
-    </section>
-    <section class="head-card">
-      <div class="card-head"><h2>Head (live)</h2><button class="info" aria-label="About head control" aria-expanded="false" aria-controls="info-head"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
-      <div class="controls">
-        <div class="seg" id="mode">
-          <button data-mode="live">Live</button><button data-mode="trace">Trace</button>
-        </div>
-        <select id="trace" aria-label="Head trace"></select>
-      </div>
-      <div class="pad frame off" id="pad" title="Drag to move the head">
-        <div class="dot head" id="headDot"></div>
-      </div>
-      <div class="row">
-        <span class="stats" id="pose">az 0° · el 0°</span>
-        <button id="centre">Centre</button>
-      </div>
-      <p class="note info-text" id="info-head" hidden>Where the viewer's head points; the gaze model relies mostly on its motion.
-        <b>Live</b> (default): drag the pad (azimuth ±90°, elevation ±45°) or use <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd>
-        (<kbd>Shift</kbd> for bigger steps); either switches the head to Live, and a head nobody moves stays at the centre.
-        <b>Trace</b>: replays a head path from a CSV in <code>Videos/</code>. Changes apply on the next frame.</p>
-    </section>
-  </nav>
+      <button class="icon" id="monitor" title="Open NDI Video Monitor" aria-label="Open NDI Video Monitor"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 14h5M8 11.5V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><button class="info" aria-label="About NDI streams" aria-expanded="false" aria-controls="info-ndi"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button>
+    </div>
+  </header>
 
-  <div class="content">
+
+  <!-- Performance, with the head control on its right -->
+  <div class="top-row">
     <section class="perf-card">
       <div class="card-head"><h2>Performance</h2><button class="info" aria-label="About the performance numbers" aria-expanded="false" aria-controls="info-perf"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
       <div class="perf" id="perf">
@@ -231,7 +233,6 @@
           <dt>Peak RAM, stream</dt><dd id="cRss"></dd>
         </dl></div>
         <div><h3>Predicted task</h3><dl id="tRows"></dl></div>
-      </div>
       <p class="note info-text" id="info-perf" hidden><b>Stream</b>: frames sent per second vs the video's rate; upscaling
         time per frame; frame budget = share of each second spent working rather than waiting for the next frame slot
         (100% means the stream cannot keep up); late frames = sends that missed their slot.
@@ -241,62 +242,83 @@
         model runs in its own process). MPS memory is GPU memory per process; GPU utilisation is not available on macOS
         without root. Updated twice a second.</p>
     </section>
+    <section class="head-card">
+      <div class="card-head"><h2>Head (live)</h2><div class="seg" id="mode"><button data-mode="live">Live</button><button data-mode="trace">Trace</button></div><select id="trace" aria-label="Head trace"></select><button class="info" aria-label="About head control" aria-expanded="false" aria-controls="info-head"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
+      <div class="pad frame off" id="pad" title="Drag to move the head">
+        <div class="dot head" id="headDot"></div>
+      </div>
+      <div class="row">
+        <span class="stats" id="pose">az 0° · el 0°</span>
+        <button id="centre">Centre</button>
+      </div>
+      <p class="note info-text" id="info-head" hidden>Where the viewer's head points; the gaze model relies mostly on its motion.
+        <b>Live</b> (default): drag the pad (azimuth ±90°, elevation ±45°) or use <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd>
+        (<kbd>Shift</kbd> for bigger steps); either switches the head to Live, and a head nobody moves stays at the centre.
+        <b>Trace</b>: replays a head path from a CSV in <code>Videos/</code>. Changes apply on the next frame.</p>
+    </section>
+  </div>
+
+  <!-- full width, below the side panel and Performance: the diagrams are wide -->
     <section class="pipeline-card">
       <div class="card-head"><h2>Pipelines</h2><button class="info" aria-label="About the pipelines" aria-expanded="false" aria-controls="info-pipeline"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/></svg></button></div>
       <div class="area">
         <h3 class="area-title">Video Super Resolution</h3>
         <div class="pipeline-wrap">
-        <svg class="pipeline" id="pipeline" viewBox="0 0 950 220" role="img" aria-label="Pipeline of the sources that use only the video">
+        <svg class="pipeline" id="pipeline" viewBox="0 0 1469 280" role="img" aria-label="Pipeline of the sources that use only the video">
           <defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M0 0 L10 5 L0 10 z" class="head"/></marker></defs>
-          <rect x="362" y="142" width="346" height="58" rx="12" class="group" data-src="vsr"/><text x="370" y="212" class="group-t" data-src="vsr">VSR</text>
-          <path d="M160 31 H188" class="flow " data-src="*" marker-end="url(#arrowhead)"/>
-          <path d="M340 31 H728" class="flow " data-src="source" marker-end="url(#arrowhead)"/>
-          <path d="M340 31 H352 V101 H368" class="flow " data-src="bicubic" marker-end="url(#arrowhead)"/>
-          <path d="M520 101 H728" class="flow " data-src="bicubic" marker-end="url(#arrowhead)"/>
-          <path d="M340 31 H352 V171 H368" class="flow " data-src="vsr" marker-end="url(#arrowhead)"/>
-          <path d="M520 171 H548" class="flow " data-src="vsr" marker-end="url(#arrowhead)"/>
-          <path d="M700 171 H728" class="flow " data-src="vsr" marker-end="url(#arrowhead)"/>
-          <g class="stage " id="pVideo" data-src="*"><rect x="10" y="8" width="150" height="46" rx="8"/><text x="20" y="26" class="t">Video</text><text x="152" y="26" class="d end" id="pVideoA"></text><foreignObject x="16" y="31" width="138" height="19"><select class="video-pick" aria-label="Video"></select></foreignObject></g>
-          <g class="stage " id="pDecode" data-src="*"><rect x="190" y="8" width="150" height="46" rx="8"/><text x="200" y="26" class="t" id="pDecodeT">Decode</text><foreignObject x="198" y="31" width="140" height="19"><label class="svg-field">Crop <input form="opts" name="vsr_crop" type="number" min="16" step="16" placeholder="full" title="send only a centred square of this many LR px on Source, Bicubic and VSR (empty: whole frame)"> px <button type="button" class="clear" id="vsrCropClear" title="Remove the crop (whole frame)" aria-label="Remove the crop">×</button></label></foreignObject></g>
-          <g class="stage " id="pBicubic" data-src="bicubic"><rect x="370" y="78" width="150" height="46" rx="8"/><text x="380" y="96" class="t" id="pBicubicT">Bicubic ×4</text><text x="380" y="113" class="d" id="pBicubicA"></text></g>
-          <g class="stage " id="pVsr" data-src="vsr"><rect x="370" y="148" width="150" height="46" rx="8"/><text x="380" y="166" class="t" id="pVsrT">SR ×4</text><foreignObject x="376" y="169" width="136" height="19"><select form="opts" name="k" class="every-pick" aria-label="Frames whole frame SR runs on" title="SR runs on these frames (whole frame); RIFE makes the ones in between"></select></foreignObject></g>
-          <g class="stage " id="pRife" data-src="rife"><rect x="550" y="148" width="150" height="46" rx="8"/><text x="560" y="166" class="t" id="pRifeT">RIFE</text><text x="560" y="183" class="d" id="pRifeA"></text></g>
-          <g class="stage out" id="pNdi_source" data-src="source"><rect x="730" y="8" width="210" height="46" rx="8"/><text x="740" y="26" class="t" id="pNdi_sourceT"></text><text x="740" y="43" class="d" id="pNdi_sourceA"></text></g>
-          <g class="stage out" id="pNdi_bicubic" data-src="bicubic"><rect x="730" y="78" width="210" height="46" rx="8"/><text x="740" y="96" class="t" id="pNdi_bicubicT"></text><text x="740" y="113" class="d" id="pNdi_bicubicA"></text></g>
-          <g class="stage out" id="pNdi_vsr" data-src="vsr"><rect x="730" y="148" width="210" height="46" rx="8"/><text x="740" y="166" class="t" id="pNdi_vsrT"></text><text x="740" y="183" class="d" id="pNdi_vsrA"></text></g>
+          <rect x="470.6" y="182" width="449.8" height="78" rx="12" class="group" data-src="vsr"/><text x="478.6" y="272" class="group-t" data-src="vsr">VSR</text>
+          <path d="M208 31 H244.4" class="flow " data-src="*" marker-end="url(#arrowhead)"/>
+          <path d="M442 31 H1180.4" class="flow " data-src="source" marker-end="url(#arrowhead)"/>
+          <path d="M442 31 H457.6 V121 H478.4" class="flow " data-src="bicubic" marker-end="url(#arrowhead)"/>
+          <path d="M676 121 H1180.4" class="flow " data-src="bicubic" marker-end="url(#arrowhead)"/>
+          <path d="M442 31 H457.6 V211 H478.4" class="flow " data-src="vsr" marker-end="url(#arrowhead)"/>
+          <path d="M676 211 H712.4" class="flow " data-src="vsr" marker-end="url(#arrowhead)"/>
+          <path d="M910 211 H1180.4" class="flow " data-src="vsr" marker-end="url(#arrowhead)"/>
+          <g class="stage " id="pVideo" data-src="*"><rect x="13" y="8" width="195" height="66" rx="8"/><text x="23" y="26" class="t">Video</text><text x="200" y="26" class="d end" id="pVideoA"></text><foreignObject x="19" y="31" width="183" height="19"><select class="video-pick" aria-label="Video"></select></foreignObject></g>
+          <g class="stage " id="pDecode" data-src="*"><rect x="247" y="8" width="195" height="66" rx="8"/><text x="257" y="26" class="t" id="pDecodeT">Decode</text><foreignObject x="255" y="31" width="185" height="19"><label class="svg-field">Crop <input form="opts" name="vsr_crop" type="number" min="16" step="16" placeholder="full" title="send only a centred square of this many LR px on Source, Bicubic and VSR (empty: whole frame)"> px <button type="button" class="clear" id="vsrCropClear" title="Remove the crop (whole frame)" aria-label="Remove the crop">×</button></label></foreignObject></g>
+          <g class="stage " id="pBicubic" data-src="bicubic"><rect x="481" y="98" width="195" height="66" rx="8"/><text x="491" y="116" class="t" id="pBicubicT">Bicubic ×4</text><text x="491" y="133" class="d" id="pBicubicA"></text></g>
+          <g class="stage " id="pVsr" data-src="vsr"><rect x="481" y="188" width="195" height="66" rx="8"/><text x="491" y="206" class="t" id="pVsrT">SR ×4</text><text x="491" y="223" class="d" id="pVsrK0">t and</text><foreignObject id="pVsrKPick" x="528" y="209" width="140" height="19"><select form="opts" name="k" class="every-pick" aria-label="Frames whole frame SR runs on" title="SR runs on these frames (whole frame); RIFE makes the ones in between"></select></foreignObject></g>
+          <g class="stage " id="pRife" data-src="rife"><rect x="715" y="188" width="195" height="66" rx="8"/><text x="725" y="206" class="t" id="pRifeT">RIFE</text><text x="725" y="223" class="d" id="pRifeA"></text></g>
+          <g class="stage out" id="pNdi_source" data-src="source"><rect x="1183" y="8" width="273" height="66" rx="8"/><text x="1193" y="26" class="t" id="pNdi_sourceT"></text><text x="1193" y="43" class="d" id="pNdi_sourceA"></text></g>
+          <g class="stage out" id="pNdi_bicubic" data-src="bicubic"><rect x="1183" y="98" width="273" height="66" rx="8"/><text x="1193" y="116" class="t" id="pNdi_bicubicT"></text><text x="1193" y="133" class="d" id="pNdi_bicubicA"></text></g>
+          <g class="stage out" id="pNdi_vsr" data-src="vsr"><rect x="1183" y="188" width="273" height="66" rx="8"/><text x="1193" y="206" class="t" id="pNdi_vsrT"></text><text x="1193" y="223" class="d" id="pNdi_vsrA"></text></g>
         </svg>
         </div>
       </div>
       <div class="area head">
         <h3 class="area-title">Gaze-Contingent Video Super Resolution</h3>
         <div class="pipeline-wrap">
-        <svg class="pipeline" id="pipelineHead" viewBox="0 0 950 224" role="img" aria-label="Pipeline of the source that uses the video and the head pose">
-          <rect x="362" y="2" width="346" height="152" rx="12" class="group" data-src="foveated"/><foreignObject x="370" y="157" width="10" height="10"><input type="checkbox" form="opts" name="fovea_sr" class="overlay-tick" title="Run the SR model around the gaze (off: bicubic as is)" aria-label="SR"></foreignObject><text x="384" y="166" class="group-t" data-src="foveated">VSR</text>
-          <path d="M160 31 H188" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
-          <path d="M340 31 H368" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
-          <path d="M340 31 H352 V112 H368" class="flow " data-src="fov_sr" marker-end="url(#arrowhead)"/>
-          <path d="M520 31 H548" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
-          <path d="M700 31 H728" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
-          <path d="M520 123 H548" class="flow " data-src="fov_sr" marker-end="url(#arrowhead)"/>
-          <path d="M625 100 V56" class="flow " data-src="fov_sr" marker-end="url(#arrowhead)"/>
-          <path d="M265 54 V98" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
-          <text x="259" y="80" class="d end" data-src="foveated">15 LR frames @ 30 Hz</text>
-          <path d="M160 123 H188" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
-          <path d="M215 146 V196 H860 V56" class="flow " data-src="fovea_outline" marker-end="url(#arrowhead)"/><foreignObject x="756" y="181" width="10" height="10" data-src="fov_sr"><input type="checkbox" form="opts" name="fovea_outline" class="overlay-tick" title="Draw the fovea outline" aria-label="Draw the fovea outline"></foreignObject><text x="769" y="190" class="d" data-src="fovea_outline">Overlay: outline</text>
-          <path d="M200 146 V208 H900 V56" class="flow " data-src="fovea_gaze" marker-end="url(#arrowhead)"/>
-          <foreignObject x="696" y="211" width="10" height="10"><input type="checkbox" form="opts" name="fovea_gaze" class="overlay-tick" title="Draw the full horizon gaze prediction" aria-label="Draw the full horizon gaze prediction"></foreignObject><text x="709" y="220" class="d" data-src="fovea_gaze">Overlay: full horizon gaze prediction</text>
-          <path d="M340 135 H368" class="flow " data-src="fov_sr" marker-end="url(#arrowhead)"/>
-          <text x="340" y="160" class="d end" data-src="fov_sr" id="pGazePt1"></text><text x="340" y="173" class="d end" data-src="fov_sr" id="pGazePt2"></text><text x="340" y="186" class="d end" data-src="fov_sr" id="pGazePt3"></text>
-          <g class="stage " id="pVideoH" data-src="foveated"><rect x="10" y="8" width="150" height="46" rx="8"/><text x="20" y="26" class="t">Video</text><text x="152" y="26" class="d end" id="pVideoHA"></text><foreignObject x="16" y="31" width="138" height="19"><select class="video-pick" aria-label="Video"></select></foreignObject></g>
-          <g class="stage " id="pDecodeH" data-src="foveated"><rect x="190" y="8" width="150" height="46" rx="8"/><text x="200" y="26" class="t" id="pDecodeHT">Decode</text><text x="200" y="43" class="d" id="pDecodeHA"></text></g>
-          <g class="stage " id="pBicubicH" data-src="foveated"><rect x="370" y="8" width="150" height="46" rx="8"/><text x="380" y="26" class="t" id="pBicubicHT">Bicubic ×4</text><text x="380" y="43" class="d" id="pBicubicHA"></text></g>
-          <g class="stage " id="pFoveated" data-src="fov_sr"><rect x="370" y="100" width="150" height="46" rx="8"/><text x="380" y="118" class="t" id="pFoveatedT">SR ×4</text><foreignObject x="440" y="103" width="76" height="17"><label class="svg-field"><input form="opts" name="fovea" type="number" min="16" step="16" title="SR area: side of the LR square around the gaze upscaled by the SR model" aria-label="SR area"> px</label></foreignObject><foreignObject x="376" y="121" width="88" height="19"><select form="opts" name="fovea_k" class="every-pick" data-short="1" aria-label="Frames crop SR runs on" title="SR runs on these frames (crop); RIFE makes the ones in between"></select></foreignObject></g>
-          <g class="stage " id="pFovRife" data-src="fov_rife"><rect x="550" y="100" width="150" height="46" rx="8"/><text x="560" y="118" class="t" id="pFovRifeT">RIFE</text><text x="560" y="135" class="d" id="pFovRifeA"></text></g>
-          <g class="stage " id="pFovBlend" data-src="foveated"><rect x="550" y="8" width="150" height="46" rx="8"/><text x="560" y="26" class="t" id="pFovBlendT">Foveated Blend</text><text x="560" y="43" class="d" id="pFovBlendA"></text></g>
-          <g class="stage " id="pHead" data-src="foveated"><rect x="10" y="100" width="150" height="46" rx="8"/><text x="20" y="118" class="t" id="pHeadT">Head pose</text><text x="20" y="135" class="d" id="pHeadA"></text></g>
-          <g class="stage " id="pModel" data-src="foveated"><rect x="190" y="100" width="150" height="46" rx="8"/><text x="200" y="118" class="t" id="pModelT">Gaze model</text><text x="200" y="135" class="d" id="pModelA"></text></g>
-          <g class="stage out" id="pNdi_foveated" data-src="foveated"><rect x="730" y="8" width="210" height="46" rx="8"/><text x="740" y="26" class="t" id="pNdi_foveatedT"></text><text x="740" y="43" class="d" id="pNdi_foveatedA"></text></g>
+        <svg class="pipeline" id="pipelineHead" viewBox="0 -14 1469 288" role="img" aria-label="Pipeline of the source that uses the video and the head pose">
+          <rect x="704.6" y="2" width="449.8" height="206" rx="12" class="group" data-src="foveated"/><foreignObject x="1121" y="-12" width="10" height="10"><input type="checkbox" form="opts" name="fovea_sr" class="overlay-tick" title="Run the SR model around the gaze (off: bicubic as is)" aria-label="SR"></foreignObject><text x="1135" y="-3" class="group-t" data-src="foveated">VSR</text>
+          <foreignObject x="712.6" y="211" width="10" height="10" data-src="fov_sr"><input type="checkbox" form="opts" name="fovea_ane" class="overlay-tick" title="Run the SR model on the Apple Neural Engine (NPU) instead of the GPU, when available (macOS, coremltools)" aria-label="Neural Engine"></foreignObject><text x="726.6" y="220" class="d" data-src="fov_sr">Neural Engine</text>
+          <foreignObject x="847.8" y="211" width="10" height="10" data-src="fov_sr"><input type="checkbox" form="opts" name="fovea_overlap" class="overlay-tick" title="Upscale the next stretch on the Neural Engine while the GPU finishes this one (k &gt; 1): faster, frames held k frames longer" aria-label="Overlap with the GPU"></foreignObject><text x="861.8" y="220" class="d" data-src="fov_sr">overlap with GPU</text>
+          <rect x="239" y="112" width="445" height="82" rx="12" class="group" data-src="foveated"/><text x="247" y="206" class="group-t" data-src="foveated">GAZE PREDICTION</text>
+          <path d="M208 31 H244.4" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <path d="M442 31 H712.4" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <path d="M442 31 H691.6 V132 H712.4" class="flow " data-src="fov_sr" marker-end="url(#arrowhead)"/>
+          <path d="M910 31 H946.4" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <path d="M1144 31 H1180.4" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <path d="M910 143 H946.4" class="flow " data-src="fov_sr" marker-end="url(#arrowhead)"/>
+          <path d="M1046.5 120 V76" class="flow " data-src="fov_sr" marker-end="url(#arrowhead)"/>
+          <path d="M344.5 74 V118" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <text x="338.5" y="100" class="d end" data-src="foveated">LR frames @ 30 Hz</text>
+          <path d="M442 153 H478.4" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <path d="M110 186 V214 H530 V188" class="flow " data-src="foveated" marker-end="url(#arrowhead)"/>
+          <path d="M676 155 H712.4" class="flow " data-src="fov_sr" marker-end="url(#arrowhead)"/>
+          <path d="M660 186 V236 H1352 V76" class="flow " data-src="fovea_outline" marker-end="url(#arrowhead)"/><foreignObject x="1216.8" y="221" width="10" height="10" data-src="fov_sr"><input type="checkbox" form="opts" name="fovea_outline" class="overlay-tick" title="Draw the fovea outline" aria-label="Draw the fovea outline"></foreignObject><text x="1229.8" y="230" class="d" data-src="fovea_outline">Overlay: outline</text>
+          <path d="M640 186 V250 H1404 V76" class="flow " data-src="fovea_gaze" marker-end="url(#arrowhead)"/>
+          <foreignObject x="1138.8" y="253" width="10" height="10"><input type="checkbox" form="opts" name="fovea_gaze" class="overlay-tick" title="Draw the full horizon gaze prediction" aria-label="Draw the full horizon gaze prediction"></foreignObject><text x="1151.8" y="262" class="d" data-src="fovea_gaze">Overlay: full horizon gaze prediction</text>
+          <g class="stage " id="pVideoH" data-src="foveated"><rect x="13" y="8" width="195" height="66" rx="8"/><text x="23" y="26" class="t">Video</text><text x="200" y="26" class="d end" id="pVideoHA"></text><foreignObject x="19" y="31" width="183" height="19"><select class="video-pick" aria-label="Video"></select></foreignObject></g>
+          <g class="stage " id="pDecodeH" data-src="foveated"><rect x="247" y="8" width="195" height="66" rx="8"/><text x="257" y="26" class="t" id="pDecodeHT">Decode</text><text x="257" y="43" class="d" id="pDecodeHA"></text></g>
+          <g class="stage " id="pBicubicH" data-src="foveated"><rect x="715" y="8" width="195" height="66" rx="8"/><text x="725" y="26" class="t" id="pBicubicHT">Bicubic ×4</text><text x="725" y="43" class="d" id="pBicubicHA"></text></g>
+          <g class="stage " id="pFoveated" data-src="fov_sr"><rect x="715" y="120" width="195" height="80" rx="8"/><text x="725" y="175" class="d" id="pFovGaze"></text><text x="725" y="138" class="t" id="pFoveatedT">SR ×4</text><foreignObject x="785" y="123" width="121" height="17"><label class="svg-field"><input form="opts" name="fovea" type="number" min="16" step="16" title="SR area: side of the LR square around the gaze upscaled by the SR model" aria-label="SR area"> px</label></foreignObject><text x="725" y="155" class="d" id="pFovK0">t and</text><foreignObject id="pFovKPick" x="762" y="141" width="140" height="19"><select form="opts" name="fovea_k" class="every-pick" aria-label="Frames crop SR runs on" title="SR runs on these frames (crop); RIFE makes the ones in between"></select></foreignObject></g>
+          <g class="stage " id="pFovRife" data-src="fov_rife"><rect x="949" y="120" width="195" height="80" rx="8"/><text x="959" y="138" class="t" id="pFovRifeT">RIFE</text><text x="959" y="155" class="d" id="pFovRifeA"></text></g>
+          <g class="stage " id="pFovBlend" data-src="foveated"><rect x="949" y="8" width="195" height="66" rx="8"/><text x="959" y="26" class="t" id="pFovBlendT">Foveated Blend</text><text x="959" y="43" class="d" id="pFovBlendA"></text></g>
+          <g class="stage " id="pHead" data-src="foveated"><rect x="13" y="120" width="195" height="66" rx="8"/><text x="23" y="138" class="t" id="pHeadT">Head pose</text><text x="23" y="155" class="d" id="pHeadA"></text></g>
+          <g class="stage " id="pUnisal" data-src="foveated"><rect x="247" y="120" width="195" height="66" rx="8"/><text x="257" y="138" class="t" id="pUnisalT">UniSal</text><text x="257" y="155" class="d" id="pUnisalA"></text></g>
+          <g class="stage " id="pLstm" data-src="foveated"><rect x="481" y="120" width="195" height="66" rx="8"/><text x="491" y="138" class="t" id="pLstmT">LSTM</text><text x="491" y="155" class="d" id="pLstmA"></text></g>
+          <g class="stage out" id="pNdi_foveated" data-src="foveated"><rect x="1183" y="8" width="273" height="66" rx="8"/><text x="1193" y="26" class="t" id="pNdi_foveatedT"></text><text x="1193" y="43" class="d" id="pNdi_foveatedA"></text></g>
         </svg>
         </div>
       </div>
@@ -306,7 +328,9 @@
         sends bicubic as is, and can draw the full horizon gaze prediction and the fovea outline; VSR runs
         the SR model on the whole frame of every k-th frame (keyframes), and RIFE makes the frames in between from the two
         upscaled keyframes around them (not used at k = 1). The gaze model runs in its own process on 30 Hz samples of the decoded frames
-        and the head pose. Press ▶ on an NDI box to stream that source alone (■ there stops it); while it streams, the parts
+        and the head pose, in two parts: UniSal computes each sample's saliency map, and the LSTM predicts the next
+        20 gaze steps from the last 15 maps and head poses. The row under each box shows where that step runs (CPU, GPU, or NPU: the Apple Neural Engine)
+        and in which thread or process. Press ▶ on an NDI box to stream that source alone (■ there stops it); while it streams, the parts
         it does not use are greyed out. Each area's options are under its diagram. Models stay loaded between runs.</p>
       <!-- Options not shown as fields; the visible ones below join this form with form="opts". -->
       <form id="opts" hidden onsubmit="return false">
@@ -316,7 +340,6 @@
       <p class="pending" id="pending" hidden></p>
       <p class="error" id="error"></p>
     </section>
-  </div>
 </main>
 
 <script>
@@ -352,7 +375,7 @@ function fillOptions(o, videos, traces) {
     if (!(el.name in o)) continue;
     // a k from the command line beyond the dropdown's 1-10: add it, or the page would send ""
     if (el.classList.contains("every-pick") && ![...el.options].some((op) => op.value === String(o[el.name])))
-      el.add(new Option(`every ${ordinal(+o[el.name])}${el.dataset.short ? "" : " frame"}`, o[el.name]));
+      el.add(new Option(everyLabel(+o[el.name]), o[el.name]));
     if (el.type === "checkbox") el.checked = !!o[el.name];
     else el.value = o[el.name] ?? "";
   }
@@ -360,10 +383,12 @@ function fillOptions(o, videos, traces) {
   syncForm();
 }
 // SR every k-th frame, picked in each pipeline's SR ×4 box
-const ordinal = (n) => (n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`);
+// The frames SR runs on, as the second of a stretch's two keyframes, t and t+k, which RIFE fills in
+// between ("t and" is fixed text beside the dropdown); k = 1: every frame is its own keyframe, t
+// (the fixed "t and" is hidden then). Written t+k rather than with subscripts, which read too small.
+const everyLabel = (n) => (n === 1 ? "t (k=1)" : `t+${n} (k=${n})`);
 document.querySelectorAll("select.every-pick").forEach((sel) => {
-  const unit = sel.dataset.short ? "" : " frame";  // a narrow box: "every 3rd"
-  for (let n = 1; n <= 10; n++) sel.add(new Option(n === 1 ? "every frame" : `every ${ordinal(n)}${unit}`, n));
+  for (let n = 1; n <= 10; n++) sel.add(new Option(everyLabel(n), n));
 });
 // The video is picked in either pipeline's Video box; both show the same one.
 const videoPicks = () => [...document.querySelectorAll("select.video-pick")];
@@ -462,7 +487,7 @@ function showSources() {
 }
 // --- Pending changes: the form differs from the options the running stream started with ---
 let runningOptions = null;  // set from the status while a stream runs
-const OPTION_LABELS = { video: "video", fovea_sr: "foveated SR", fovea: "SR area", fovea_k: "foveated SR every (frames)", fovea_outline: "fovea outline", fovea_gaze: "full horizon gaze prediction", k: "VSR SR every (frames)", vsr_crop: "crop" };
+const OPTION_LABELS = { video: "video", fovea_sr: "foveated SR", fovea: "SR area", fovea_k: "foveated SR every (frames)", fovea_outline: "fovea outline", fovea_gaze: "full horizon gaze prediction", fovea_ane: "Neural Engine", fovea_overlap: "overlap with GPU", k: "VSR SR every (frames)", vsr_crop: "crop" };
 function sameValue(a, b) {
   const norm = (v) => (v === null || v === undefined || v === "" ? "" : typeof v === "boolean" ? String(v) : String(Number(v) || v));
   return norm(a) === norm(b);
@@ -570,8 +595,20 @@ const deg = (x) => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(1)}°`;
 // --- Pipeline card: live values in each stage ---
 // Stage boxes are 150 units wide: cut long values (e.g. file names) and keep the full text as a tooltip.
 const STAGE_CHARS = 23;
-function setText(id, text, max = STAGE_CHARS) {  // max: more for a wider box
+// The diagrams scale with their width; above their viewBox size their font sizes are divided by
+// that scale (--k), so the text stays the size of the rest of the page's.
+const diagramK = (el) => +getComputedStyle(el.closest("svg")).getPropertyValue("--k") || 1;
+function fitDiagramText() {
+  document.querySelectorAll("svg.pipeline").forEach((svg) => {
+    const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+    svg.style.setProperty("--k", String(1 / Math.max(scale, 1)));
+  });
+}
+new ResizeObserver(fitDiagramText).observe(document.querySelector(".pipeline-card"));
+
+function setText(id, text, max = STAGE_CHARS) {  // max: more for a wider box (and for smaller text)
   const el = $(id), full = text || "";
+  if (el.closest("svg")) max = Math.floor(max / diagramK(el));
   el.textContent = full.length > max ? `${full.slice(0, max - 1)}…` : full;
   let tip = el.querySelector("title");
   if (full.length > max) {
@@ -581,15 +618,30 @@ function setText(id, text, max = STAGE_CHARS) {  // max: more for a wider box
 }
 // The foveated source's horizon follows k, as on the server (stream/control.py stretch_horizon): the
 // gaze step (30 Hz) at the end of a stretch of k video frames, so the crop is placed where the gaze will be.
+// While streaming, the server's own value (one stretch further with SR overlapped on the Neural Engine).
 function fovHorizon(o, st) {
+  const s = st.status || {};
+  if (["loading", "streaming"].includes(s.state) && s.fovea_horizon) return s.fovea_horizon;
   const k = +o.fovea_k || 1, vi = (st.video_info || {})[o.video], fps = vi ? vi[2] : 60;
-  return Math.min(GAZE_MODEL.steps, Math.max(1, Math.ceil(k * GAZE_MODEL.hz / fps)));
+  const held = fovOverlap(o, st) ? 2 * k : k;  // overlap holds frames one stretch longer
+  return Math.min(GAZE_MODEL.steps, Math.max(1, Math.ceil(held * GAZE_MODEL.hz / fps)));
+}
+// whether the foveated SR runs on the Neural Engine overlapped with the GPU: as the server reports it
+// while streaming, otherwise as the options would run here
+function fovOverlap(o, st) {
+  const s = st.status || {}, hw = st.hardware || {};
+  if (["loading", "streaming"].includes(s.state) && s.engines) return !!s.engines.overlap;
+  return (o.device || hw.device) === "mps" && !!hw.neural_engine && !!o.fovea_ane && !!o.fovea_overlap && +o.fovea_k > 1;
 }
 function showPipeline(st) {
   const s = st.status, running = ["loading", "streaming"].includes(s.state);
   const o = (running && s.options) || readOptions();
   const on = new Set(running ? o.sources || [] : Object.keys(SOURCES)), fovH = fovHorizon(o, st);
   form.elements.fovea_outline.disabled = !o.fovea_sr;  // no crop to outline without SR
+  // the Neural Engine only where there is one (macOS, MPS, coremltools); overlap needs it and k > 1
+  const neural = !!(st.hardware || {}).neural_engine;
+  form.elements.fovea_ane.disabled = !o.fovea_sr || !neural;
+  form.elements.fovea_overlap.disabled = !o.fovea_sr || !neural || !o.fovea_ane || +o.fovea_k === 1;
   // Overlays on the foveated source count as parts of the pipeline too.
   // Foveated: the SR stages (SR off: the blend passes the bicubic frame as is); the overlays drawn on it.
   if (on.has("foveated") && o.fovea_sr) on.add("fov_sr");
@@ -617,33 +669,56 @@ function showPipeline(st) {
   // crops in between, then blending into the bicubic frame; times are per frame sent
   const fs = (live && ps.foveated_stages) || {}, msEach = (v) => (v ? `${v.toFixed(v >= 10 ? 0 : 1)} ms` : "");
   const fk = +o.fovea_k || 1;
-  // what places the crop: the current gaze point (k = 1), or the stretch's current and future ones
-  const gazeLines = fk === 1 ? ["", "current (t)", "gaze point"] : ["current (t)", "+ t+k future", "gaze point"];
-  gazeLines.forEach((line, i) => ($(`pGazePt${i + 1}`).textContent = line));
-  setText("pFovRifeA", fk === 1 ? "off: SR on every frame" : `${fk - 1} of ${fk} crops` + (fs.rife ? ` · ${msEach(fs.rife)}` : ""));
+  // What places the crop, in the SR box: the current gaze point (k = 1), or the span of gaze the stretch
+  // covers, from now (t): a stretch shown about now covers t to t+k; with overlap every frame is held
+  // one stretch longer, so the span moves to t+k to t+2k.
+  setText("pFovGaze", fk === 1 ? "gaze: current (t)" :  // in frames, as k is
+    fovOverlap(o, st) ? `gaze: t+${fk} and t+${2 * fk} future` : `gaze: t and t+${fk} future`, 26);
+  // the crops RIFE makes: those between the stretch's two keyframes (its speed is on the fps chip)
+  setText("pFovRifeA", fk === 1 ? "off: SR on every frame" : `frames between t and t+${fk}`, 26);
   setText("pFovBlendA", !o.fovea_sr ? "SR off: bicubic as is" : msEach(fs.blend) ? `${msEach(fs.blend)}/frame` : "into bicubic, soft edge");
   // VSR in two stages, each with its own time per frame it makes
-  const k = +o.k, vs = (live && ps.vsr_stages) || {}, each = (stage) => (stage && stage.ms ? ` · ${stage.ms.toFixed(0)} ms each` : "");
-  setText("pRifeA", k === 1 ? "off: SR on every frame" : `${k - 1} of ${k} frames` + each(vs.rife));
+  const k = +o.k, vs = (live && ps.vsr_stages) || {};
+  // as in the foveated diagram: SR on the keyframes t and t+k, RIFE for the frames between them
+  setText("pRifeA", k === 1 ? "off: SR on every frame" : `frames between t and t+${k}`, 26);
+  $("pVsrK0").style.display = k === 1 ? "none" : "";  // k = 1: just "t (k=1)", the dropdown where "t and" was
+  $("pVsrKPick").setAttribute("x", k === 1 ? 487 : 528);
   setText("pHeadA", st.live.head_mode === "trace" ? `trace: ${st.live.head_trace || "–"}` :
     (s.head && live ? `live: az ${deg(s.head[0])}, el ${deg(s.head[1])}` : "live (page)"));
   // the model's input: 15 frames + the head pose, sampled at 30 Hz (fixed by its training)
-  setText("pModelA", live && g && g.model_ms !== null && g.model_ms !== undefined ?
-    `${g.model_ms.toFixed(0)} ms · lag ${g.lag_ms === null ? "–" : g.lag_ms.toFixed(0) + " ms"}` :
-    "30 Hz · UniSal + LSTM");
+  // the gaze model in its two parts: UniSal's saliency of each 30 Hz sample, then the LSTM's
+  // prediction from the last 15 saliency maps and head poses (20 steps ahead)
+  const has = (v) => live && g && v !== null && v !== undefined;
+  setText("pUnisalA", has(g && g.saliency_ms) ? `${g.saliency_ms.toFixed(1)} ms per frame` : "saliency · 30 Hz");
+  setText("pLstmA", has(g && g.lstm_ms) ?
+    `${g.lstm_ms.toFixed(1)} ms · lag ${g.lag_ms === null ? "–" : g.lag_ms.toFixed(0) + " ms"}` : "maps + head → 20 steps");
   // fps chips: the rate each step could reach from its time per frame. Decode has none: ffmpeg
   // decodes ahead in its own process, and the run's actual pace is on the NDI chips.
   const vf = ps.video_fps, rate = (msv) => (live && msv ? 1000 / msv : null);
   const gazeUsed = on.has("foveated");
   setChip("pBicubic", on.has("bicubic") ? rate(ups.bicubic) : null, vf);
   setChip("pBicubicH", gazeUsed ? rate(ups.bicubic) : null, vf);
-  setChip("pFoveated", on.has("fov_sr") ? rate(fs.sr) : null, vf, true);  // on the dropdown's row: SR area is in the corner
+  setChip("pFoveated", on.has("fov_sr") ? rate(fs.sr) : null, vf, "unit");  // on the hardware row: SR area and the dropdown fill the others
+  const k1 = +o.fovea_k === 1;  // k = 1: just "t (k=1)", the dropdown where "t and" was
+  // With overlap, SR works one stretch ahead of RIFE: while RIFE fills t to t+k, SR is on t+k to t+2k.
+  const ahead = fovOverlap(o, st);
+  $("pFovK0").style.display = k1 ? "none" : "";
+  $("pFovK0").textContent = ahead ? `t+${o.fovea_k} and` : "t and";
+  $("pFovKPick").setAttribute("x", k1 ? 721 : ahead ? 780 : 762);  // after "t+10 and" at most
+  $("pFovKPick").setAttribute("width", ahead ? 122 : 140);  // inside the box either way
+  for (const op of form.elements.fovea_k.options) {  // only when they change: rewriting them closes an open list
+    const text = ahead ? `t+${2 * op.value} (k=${op.value})` : everyLabel(+op.value);
+    if (op.text !== text) op.text = text;
+  }
   setChip("pFovRife", on.has("fov_rife") ? rate(fs.rife) : null, vf);
   setChip("pFovBlend", on.has("fov_sr") ? rate(fs.blend) : null, vf, true);  // below the title, which fills the top row
   // stage chips: frames sent per second if that stage were the only cost
   setChip("pVsr", on.has("vsr") ? rate(vs.sr && vs.sr.ms_out) : null, vf);
   setChip("pRife", on.has("rife") ? rate(vs.rife && vs.rife.ms_out) : null, vf);
-  setChip("pModel", live && g ? rate(g.model_ms) : null, 30);  // must keep up with its 30 Hz input (fixed by its training)
+  // both must keep up with their 30 Hz input (fixed by the gaze model's training)
+  setChip("pUnisal", live && g ? rate(g.saliency_ms) : null, 30);
+  setChip("pLstm", live && g ? rate(g.lstm_ms) : null, 30);
+  for (const [id, [unit, where]] of Object.entries(placements(o, st))) setUnit(id, unit, where);
   const name = o.name || "StreamNDI";
   for (const k of Object.keys(SOURCES)) {
     const ndiName = `${name}-${ndiLabel(k, o)}`;  // shown whole; a long one (e.g. -Cropped) a size smaller
@@ -655,6 +730,52 @@ function showPipeline(st) {
     // send rate as a chip next to the NDI name (the NDI boxes are wider to fit both)
     setChip(`pNdi_${k}`, on.has(k) && live && ps.fps !== undefined ? ps.fps : null, vf);
   }
+}
+
+// Where each step runs: CPU, GPU (MPS or CUDA) or NPU (the Apple Neural Engine), and the thread or
+// process. While streaming, as the server reports it; otherwise as the options would run here.
+function placements(o, st) {
+  const s = st.status || {}, hw = st.hardware || {};
+  const run = ["loading", "streaming"].includes(s.state) && s.engines;
+  const device = run ? s.engines.device : o.device || hw.device || "cpu", gpu = device === "cpu" ? "CPU" : "GPU";
+  const neural = device === "mps" && !!hw.neural_engine;  // the gaze model's saliency runs there too
+  const ane = run ? s.engines.fovea_sr === "npu" : neural && !!o.fovea_ane;
+  const overlap = fovOverlap(o, st);
+  const stream = [gpu, "VSR Thread"];  // the stream thread, which does the upscaling
+  const p = {
+    pDecode: ["CPU", "FFmpeg Process"], pDecodeH: ["CPU", "FFmpeg Process"],
+    pBicubic: stream, pBicubicH: stream, pVsr: stream, pRife: stream, pFovRife: stream, pFovBlend: stream,
+    // k > 1 with overlap: its own thread drives the Neural Engine's SR, beside the stream thread
+    pFoveated: ane && overlap ? ["NPU", "SR Thread"] : ane ? ["NPU", "VSR Thread"] : stream,
+    pHead: ["CPU", "VSR Thread"],
+    pUnisal: [neural ? "NPU" : gpu, "Gaze Thread"],  // Core ML on the Neural Engine where there is one
+    pLstm: [gpu, "Gaze Thread"],
+  };
+  for (const k of Object.keys(SOURCES)) p[`pNdi_${k}`] = ["CPU", "NDI Thread"];
+  return p;
+}
+
+// the row under a pipeline box's title: a CPU / GPU / NPU chip and the thread or process (created on first use)
+function setUnit(boxId, unit, where) {
+  const box = $(boxId), rect = box.querySelector("rect");
+  let g = box.querySelector(".unit");
+  if (!g) {
+    g = document.createElementNS(SVG_NS, "g");
+    const label = document.createElementNS(SVG_NS, "text"), place = document.createElementNS(SVG_NS, "text");
+    label.setAttribute("class", "u");
+    place.setAttribute("class", "d");
+    g.append(document.createElementNS(SVG_NS, "rect"), label, place);
+    box.append(g);
+  }
+  const [r, label, place] = g.children;
+  const x = +rect.getAttribute("x") + 10, y = +rect.getAttribute("y") + +rect.getAttribute("height") - 20;  // the box's bottom row
+  const w = (10 + unit.length * 6.4) * diagramK(box);
+  Object.entries({ x, y, width: w, height: 15, rx: 4 }).forEach(([k, v]) => r.setAttribute(k, v));
+  Object.entries({ x: x + w / 2, y: y + 11 }).forEach(([k, v]) => label.setAttribute(k, v));
+  Object.entries({ x: x + w + 6, y: y + 11 }).forEach(([k, v]) => place.setAttribute(k, v));
+  label.textContent = unit;
+  place.textContent = where;
+  g.setAttribute("class", `unit ${unit.startsWith("NPU") ? "npu" : unit.toLowerCase()}`);
 }
 
 // fps chip in the top-right corner of a pipeline box (created on first use; hidden without a value)
@@ -670,9 +791,9 @@ function setChip(boxId, fps, videoFps, bottom = false, fixed = false) {
   if (fps === null || fps === undefined || !isFinite(fps)) { chip.style.display = "none"; return; }
   chip.style.display = "";
   const label = `${fps >= 100 ? Math.round(fps) : fps >= 10 ? fps.toFixed(0) : fps.toFixed(1)} fps`;
-  const w = 8 + label.length * 5.6, h = 15;
+  const w = (8 + label.length * 5.6) * diagramK(box), h = 15;
   const x = Number(rect.getAttribute("x")) + Number(rect.getAttribute("width")) - w - 6;
-  const y = Number(rect.getAttribute("y")) + (bottom ? 25 : 5);
+  const y = Number(rect.getAttribute("y")) + (bottom === "unit" ? Number(rect.getAttribute("height")) - 20 : bottom ? 25 : 5);  // top row, second, or the hardware row
   const [r, t] = chip.children;
   Object.entries({ x, y, width: w, height: h, rx: 7.5 }).forEach(([k, v]) => r.setAttribute(k, v));
   Object.entries({ x: x + w / 2, y: y + 11 }).forEach(([k, v]) => t.setAttribute(k, v));

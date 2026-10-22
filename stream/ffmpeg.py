@@ -75,31 +75,6 @@ def probe_video(video_path: str):
     return width, height, fps, total_frames
 
 
-def start_video_decoder(video_path: str):
-    """Start ffmpeg process that loops video forever and outputs raw BGRA frames."""
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-stream_loop",
-        "-1",
-        "-i",
-        video_path,
-        "-an",
-        "-pix_fmt",
-        "bgra",
-        "-f",
-        "rawvideo",
-        "pipe:1",
-    ]
-    try:
-        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    except FileNotFoundError:
-        print("Error: ffmpeg not found. Install ffmpeg first.")
-        sys.exit(1)
-
-
 def read_exact(pipe, num_bytes: int):
     """Read exactly num_bytes from pipe, or None on EOF/failure."""
     chunks = []

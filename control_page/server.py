@@ -45,6 +45,21 @@ def video_info(name):
     return _VIDEO_INFO[key]
 
 
+_HARDWARE = None
+
+
+def hardware():
+    """The device runs use by default and whether the Apple Neural Engine can be used (macOS with
+    coremltools), for the page's CPU / GPU / NPU chips before a run starts. Computed once."""
+    global _HARDWARE
+    if _HARDWARE is None:
+        from stream.runner import default_device
+        from upscale.vsr.super_resolution import coreml
+
+        _HARDWARE = {"device": default_device(), "neural_engine": coreml.available()}
+    return _HARDWARE
+
+
 def make_server(controller, options, host="127.0.0.1", port=8000, monitor=open_monitor, sources=list):
     """Builds the server. `controller` is a control_page.controller.StreamController (or anything with start/stop,
     live and status); `options` the StreamOptions the page starts with.
@@ -94,6 +109,7 @@ def make_server(controller, options, host="127.0.0.1", port=8000, monitor=open_m
                     "traces": list_files(VIDEOS, ".csv"),
                     # the gaze model's fixed rate and number of predicted steps (gaze/spec.py)
                     "gaze_model": {"hz": MODEL_HZ, "steps": FUTURE},
+                    "hardware": hardware(),
                     "ndi": ndi_sources(),
                 })
             else:

@@ -28,6 +28,8 @@ frame on the CPU took longer than the SR model.
 """
 
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -86,9 +88,13 @@ class FoveatedStream:
     """Bicubic on the whole frame + `sr` (a VSRPipeline) on a `fovea` x `fovea` LR square
     around the gaze point: on every frame (k = 1), or on every k-th frame with RIFE in
     between (k > 1; `sr` must then have its interpolation model, i.e. be built with k > 1).
-    Returns uint8 (H, W, 3) RGB frames, or (H, W, 4) BGRA with bgra=True."""
+    Returns uint8 (H, W, 3) RGB frames, or (H, W, 4) BGRA with bgra=True. ane=True runs the SR
+    model on the Apple Neural Engine (VSRPipeline.run_sr(..., neural_engine=True)), off the GPU.
+    overlap=True (needs ane, k > 1) runs it there in a background thread, at the same time as
+    the GPU's RIFE and blending for the previous stretch: faster, but frames are held one
+    stretch (k frames) longer."""
 
-    def __init__(self, sr, fovea=96, device="cpu", k=1, bgra=False):
+    def __init__(self, sr, fovea=96, device="cpu", k=1, bgra=False, ane=False, overlap=False):
         if fovea < 16:
             raise ValueError(f"fovea must be at least 16 LR pixels, got {fovea}")
         if k < 1:
@@ -99,6 +105,11 @@ class FoveatedStream:
         self.fovea = fovea
         self.k = k
         self.bgra = bgra
+        self.ane = ane
+        if overlap and not ane:
+            raise ValueError("overlap needs ane=True: only the Neural Engine can run beside the GPU")
+        self.overlap = overlap and k > 1
+        self._worker = ThreadPoolExecutor(1, thread_name_prefix="foveated-sr") if self.overlap else None
         self.device = torch.device(device)
         self.base = BicubicStream(scale=SCALE, device=device)
         self._mask = None
@@ -109,26 +120,36 @@ class FoveatedStream:
         self.sr_frames = self.rife_frames = self.frames = 0
         self.reset()
 
+    def prepare(self, width, height):
+        """With ane=True: converts and loads the SR model on the Neural Engine for this video's
+        crop size now, rather than at the first keyframe (about 8 s, plus 20 s the first time)."""
+        if self.ane:
+            size = min(self.fovea, width, height)
+            self.sr.load_neural_engine(size, size)
+
     def reset(self):
         """Forgets frames held for the next keyframe (k > 1). Call between clips."""
         self._index = 0
         self._pending = []  # (index, LR frame, gaze, (1, 3, H, W) bicubic frame) after the last keyframe
-        self._previous = None  # the last keyframe: (LR frame, LR box, SR crop tensor)
+        self._previous = None  # the last keyframe: (LR frame, LR box, its SR crop from _sr_crops)
+        self._started = deque()  # stretches started (_start) but not finished (_finish)
 
     @torch.no_grad()
     def push(self, images, gazes=None, base=None) -> list[np.ndarray]:
         """Upscales a batch of uint8 (H, W, 3) frames (`gazes`: one (u, v) or None per frame).
-        `base`: the frames already upscaled with bicubic, as BicubicStream.upscale returns them
-        (left unchanged), to avoid computing them twice. Returns the frames that are ready, in order."""
+        `base`: the frames already upscaled with bicubic, as BicubicStream.upscale_bgra returns them
+        (LR batch, BGRA frames; the SR regions are blended into those frames in place), to avoid
+        computing them twice. Returns the frames that are ready, in order."""
         self.last_boxes = []
         if not images:
             return []
         gazes = gazes if gazes is not None else [None] * len(images)
-        bases = base if base is not None else self.base.upscale(images)
+        lr, bgra = base if base is not None else self.base.upscale_bgra(images)
+        bases = [(lr[i:i + 1], bgra[i:i + 1]) for i in range(len(images))]  # per frame: LR, BGRA
         if self.k == 1:
             return self._every_frame(images, gazes, bases)
-        for i, (image, gaze) in enumerate(zip(images, gazes)):
-            self._pending.append((self._index, image, gaze, bases[i:i + 1]))
+        for (image, gaze), frame in zip(zip(images, gazes), bases):
+            self._pending.append((self._index, image, gaze, frame))
             self._index += 1
         return self._drain(final=False)
 
@@ -147,14 +168,21 @@ class FoveatedStream:
         boxes = [fovea_box(g, w, h, size) for g in gazes]
         crops = [np.ascontiguousarray(img[y0:y1, x0:x1]) for img, (x0, y0, x1, y1) in zip(images, boxes)]
         start = time.perf_counter()
-        sr = frame_io.to_batch(self.sr(crops), device=self.device, dtype=torch.float32)  # numpy out, so the GPU work is done
+        if self.ane:
+            batch = frame_io.to_batch(crops, device=self.sr.device, dtype=self.sr.dtype)
+            sr = torch.cat(self.sr.run_sr(batch, neural_engine=True))
+        else:
+            sr = frame_io.to_batch(self.sr(crops), device=self.device, dtype=torch.float32)  # numpy out, so the GPU work is done
         self.sr_s += time.perf_counter() - start
         self.sr_frames += len(crops)
         return self._blend(bases, sr, boxes)
 
     # --- k > 1: SR on keyframe crops, RIFE in between ----------------------------------------
     def _drain(self, final):
-        """Emits every held frame whose closing keyframe has arrived (or all of them if final)."""
+        """Emits every held frame whose closing keyframe has arrived (or all of them if final).
+        Each stretch is started when it closes (crop placed, SR begun) and then finished (RIFE,
+        blend); with overlap, only once the next stretch has started too, so the Neural Engine
+        upscales one stretch while the GPU finishes the previous one."""
         out, boxes = [], []
         while self._pending:
             ends = [i for i, (index, *_) in enumerate(self._pending) if index % self.k == 0]
@@ -163,52 +191,82 @@ class FoveatedStream:
                     break
                 ends = [len(self._pending) - 1]  # end of the clip: the last frame closes the stretch
             stretch, self._pending = self._pending[:ends[0] + 1], self._pending[ends[0] + 1:]
-            frames, frame_boxes = self._stretch(stretch)
+            self._started.append(self._start(stretch))
+        keep = 1 if self.overlap and not final else 0
+        while len(self._started) > keep:
+            frames, frame_boxes = self._finish(self._started.popleft())
             out += frames
             boxes += frame_boxes
         self.last_boxes = boxes
         return out
 
-    def _stretch(self, stretch):
-        """Upscales the crops of one stretch: the frames after the previous keyframe up to and
-        including the closing keyframe, all at one crop position."""
+    def _start(self, stretch):
+        """Places the crop of one stretch (the frames after the previous keyframe up to and
+        including the closing keyframe, all at one crop position) and starts its SR. Returns
+        (stretch, box, opening keyframe's SR or None, closing keyframe's SR) for _finish."""
         image = stretch[-1][1]
         h, w = image.shape[:2]
         size = min(self.fovea, h, w)
         box = fovea_box(mean_gaze([g for _, _, g, _ in stretch]), w, h, size)
-        start = time.perf_counter()
-        if self._previous is None:  # the clip's first keyframe opens nothing: emit it as is
-            end_sr = self._sr_crops([image], box)[0]
-            self.sr_s += time.perf_counter() - start
-            self._previous = (image, box, end_sr)
-            return self._blend(stretch[-1][3], end_sr, [box]), [_hr(box)]
-        prev_image, prev_box, prev_sr = self._previous
-        if max(abs(a - b) for a, b in zip(prev_box, box)) <= STICKY * size:
-            box = prev_box  # close enough: keep the crop, and the previous keyframe's SR
-            end_sr = self._sr_crops([image], box)[0]
-        else:  # the crop moves: the opening keyframe is upscaled again at the new place
-            prev_sr, end_sr = self._sr_crops([prev_image, image], box)
-        self.sr_s += time.perf_counter() - start
-        # RIFE: the crops between the two keyframes, at their place in time
+        if self._previous is None:  # the clip's first keyframe opens nothing: emitted as is
+            opening, end = None, self._sr_crops([image], box)[0]
+        else:
+            prev_image, prev_box, prev_sr = self._previous
+            if max(abs(a - b) for a, b in zip(prev_box, box)) <= STICKY * size:
+                box = prev_box  # close enough: keep the crop, and the previous keyframe's SR
+                opening, end = prev_sr, self._sr_crops([image], box)[0]
+            else:  # the crop moves: the opening keyframe is upscaled again at the new place
+                opening, end = self._sr_crops([prev_image, image], box)
+        self._previous = (image, box, end)
+        return stretch, box, opening, end
+
+    def _finish(self, started):
+        """RIFE for the crops between a started stretch's two keyframes, at their place in time,
+        and the blend. Returns the stretch's frames and their boxes."""
+        stretch, box, opening, end = started
+        end_sr = self._result(end)
+        if opening is None:
+            return self._blend([stretch[-1][3]], end_sr, [box]), [_hr(box)]
+        prev_sr = self._result(opening)
         start = time.perf_counter()
         n = len(stretch)
-        mids = [self.sr.interpolation(prev_sr, end_sr, timestep=i / n) for i in range(1, n)]
+        # all the crops between the two keyframes in one call (the pair repeated), each at its
+        # place in time: one RIFE call per stretch instead of n - 1
+        mids = [self.sr.interpolation(prev_sr.repeat(n - 1, 1, 1, 1), end_sr.repeat(n - 1, 1, 1, 1),
+                                      timestep=[i / n for i in range(1, n)])] if n > 1 else []
         crops = torch.cat(mids + [end_sr])
         self._sync()  # so the RIFE time is not counted as the blend's
         self.rife_s += time.perf_counter() - start
-        self.rife_frames += len(mids)
-        self._previous = (image, box, end_sr)
-        return self._blend(torch.cat([frame for *_, frame in stretch]), crops, [box] * n), [_hr(box)] * n
+        self.rife_frames += n - 1
+        return self._blend([frame for *_, frame in stretch], crops, [box] * n), [_hr(box)] * n
 
     def _sr_crops(self, images, box):
-        """SR of each image's `box` crop, as (1, C, 4h, 4w) tensors (for RIFE)."""
+        """SR of each image's `box` crop, as (1, C, 4h, 4w) tensors on the device (for RIFE), or
+        with overlap as _Pending handles to them, upscaled on the Neural Engine in the background."""
         x0, y0, x1, y1 = box
         crops = [np.ascontiguousarray(img[y0:y1, x0:x1]) for img in images]
-        batch = frame_io.to_batch(crops, device=self.sr.device, dtype=self.sr.dtype)
         self.sr_frames += len(crops)
-        out = self.sr.run_sr(batch)
+        if self.overlap:
+            job = self._worker.submit(self._sr_in_background, frame_io.to_batch(crops, device="cpu", dtype=torch.float32))
+            return [_Pending(job, i) for i in range(len(crops))]
+        start = time.perf_counter()
+        batch = frame_io.to_batch(crops, device=self.sr.device, dtype=self.sr.dtype)
+        out = self.sr.run_sr(batch, neural_engine=True) if self.ane else self.sr.run_sr(batch)
         self._sync()  # so the SR time is not counted as RIFE's
+        self.sr_s += time.perf_counter() - start
         return out
+
+    def _sr_in_background(self, batch):
+        """Worker thread: SR on the Neural Engine, with CPU tensors only (PyTorch's MPS backend is
+        not thread-safe, so the GPU stays with the stream thread)."""
+        start = time.perf_counter()
+        out = self.sr.run_sr_cpu(batch)
+        self.sr_s += time.perf_counter() - start
+        return out
+
+    def _result(self, sr):
+        """An SR crop from _sr_crops, on the device (with overlap, waits for it if needed)."""
+        return sr.result(self.sr.device, self.sr.dtype) if isinstance(sr, _Pending) else sr
 
     def _sync(self):
         """Waits for queued GPU work."""
@@ -220,34 +278,43 @@ class FoveatedStream:
 
     # --- both ------------------------------------------------------------------------------------
     def _blend(self, bases, sr, boxes):
-        """Blends SR crops ((N, 3, 4h, 4w) tensor in [0, 1]) into the bicubic frames ((N, 3, H, W)
-        tensor, not changed) at the LR `boxes`: SR detail on bicubic's colours, through the round
-        soft-edged mask. Returns the frames as uint8 arrays (RGB, or BGRA with bgra=True)."""
+        """Blends SR crops ((N, 3, 4h, 4w) tensor in [0, 1]) into the bicubic frames (N (LR, BGRA)
+        pairs from BicubicStream.upscale_bgra; the BGRA frames are written into) at the LR `boxes`:
+        SR detail on bicubic's colours, through the round soft-edged mask. Only the regions are
+        worked on in float: their bicubic colours come from upscaling the LR box again. Returns the
+        frames as uint8 arrays (BGRA, or RGB with bgra=False)."""
         start = time.perf_counter()
         size = boxes[0][2] - boxes[0][0]
         if self._mask is None or self._mask.shape[-1] != size * SCALE:
             self._mask = torch.from_numpy(fovea_mask(size * SCALE)).permute(2, 0, 1)[None].to(self.device)
         hr = [_hr(b) for b in boxes]
-        bases = bases.to(self.device, torch.float32)
-        base = torch.cat([frame[None, :, Y0:Y1, X0:X1] for frame, (X0, Y0, X1, Y1) in zip(bases, hr)])
+        base = torch.cat([self.base.upscale_region(lr, box) for (lr, _), box in zip(bases, boxes)])
         sr = sr.to(self.device, torch.float32)
         # SR detail on bicubic's colours: base_low + (sr - sr_low)
         fused = sr - lowpass(sr) + lowpass(base)
         blended = base + (fused - base) * self._mask
-        if self.bgra:  # convert the frames and the blended regions, and paste the regions in
-            out, regions = frame_io.to_bgra_tensor(bases), frame_io.to_bgra_tensor(blended)
-            for frame, region, (X0, Y0, X1, Y1) in zip(out, regions, hr):
-                frame[Y0:Y1, X0:X1] = region
-            frames = list(out.cpu().numpy())  # waits for the GPU
-        else:
-            out = bases.clone()
-            for frame, region, (X0, Y0, X1, Y1) in zip(out, blended, hr):
-                frame[:, Y0:Y1, X0:X1] = region
-            frames = frame_io.to_numpy(out)
+        for (_, frame), region, (X0, Y0, X1, Y1) in zip(bases, frame_io.to_bgra_tensor(blended), hr):
+            frame[0, Y0:Y1, X0:X1] = region  # the blended region into the BGRA frame
+        frames = [frame[0].cpu().numpy() for _, frame in bases]  # waits for the GPU
+        if not self.bgra:
+            frames = [np.ascontiguousarray(f[..., 2::-1]) for f in frames]  # BGRA -> RGB
         self.blend_s += time.perf_counter() - start
         self.frames += len(frames)
         self.last_boxes = hr
         return frames
+
+
+class _Pending:
+    """One crop of an SR job running on the Neural Engine in the background (overlap)."""
+
+    def __init__(self, job, index):
+        self.job, self.index, self._tensor = job, index, None
+
+    def result(self, device, dtype):
+        """The crop as a (1, C, 4h, 4w) tensor on `device`, once the job is done."""
+        if self._tensor is None:
+            self._tensor = self.job.result()[self.index].to(device, dtype)
+        return self._tensor
 
 
 def _hr(box):

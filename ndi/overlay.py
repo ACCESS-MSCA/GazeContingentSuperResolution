@@ -3,6 +3,9 @@ import math
 import numpy as np
 
 GREEN = np.array((0, 255, 0), np.float32)  # BGR
+# The gaze path's shades, BGR: pale green for the soonest step to deep green for the last one.
+PATH_SOON = np.array((170, 235, 170), np.float32)
+PATH_LAST = np.array((40, 190, 40), np.float32)
 
 
 def draw_gaze(frame: np.ndarray, uv) -> np.ndarray:
@@ -14,8 +17,8 @@ def draw_gaze(frame: np.ndarray, uv) -> np.ndarray:
         return frame
     h, w = frame.shape[:2]
     cx, cy = uv[0] * (w - 1), uv[1] * (h - 1)
-    radius = max(6, min(h, w) // 10)
-    thickness = max(2, radius // 8)
+    radius = max(6, min(h, w) // 36)  # 15 px at 960x544, 60 at 4K
+    thickness = max(2, radius // 6)
 
     # only the square around the ring (the whole frame took 24 ms at 4K)
     reach = radius + thickness
@@ -49,43 +52,47 @@ def draw_fovea(frame: np.ndarray, box) -> np.ndarray:
 
 def draw_gaze_path(frame: np.ndarray, path) -> np.ndarray:
     """Draw all predicted steps (a list of (u, v) in [0, 1], step 1 first) on a BGRA frame
-    (in-place): a line through small dots, blended in more strongly for later steps, like the
-    control page's "Predicted gaze in the frame". None draws nothing."""
+    (in-place): a line through small dots in shades of green, pale for the soonest step to deep
+    green for the last, which is drawn just stronger (opaque, a pixel larger). None draws nothing."""
     if not path:
         return frame
     h, w = frame.shape[:2]
     pts = np.array([(u * (w - 1), v * (h - 1)) for u, v in path], np.float32)
     n = len(pts)
-    alpha = 0.3 + 0.7 * np.arange(n) / max(n - 1, 1)
+    shades = PATH_SOON + (PATH_LAST - PATH_SOON) * (np.arange(n) / max(n - 1, 1))[:, None]
     r = max(2, min(h, w) // 100)  # dot radius: 5 px at 960x544
 
-    def blend(ys, xs, a):
+    def blend(ys, xs, colour, a):
         ok = (ys >= 0) & (ys < h) & (xs >= 0) & (xs < w)
         ys, xs = ys[ok], xs[ok]
         px = frame[ys, xs, :3].astype(np.float32)
-        frame[ys, xs, :3] = (px + (GREEN - px) * a).astype(np.uint8)
+        frame[ys, xs, :3] = (px + (colour - px) * a + 0.5).astype(np.uint8)
 
-    for i in range(n - 1):  # line segments, 2 px, at 45% like the page
+    for i in range(n - 1):  # line segments, 2 px, in the shade of the step they lead to
         (x0, y0), (x1, y1) = pts[i], pts[i + 1]
         steps = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
         t = np.linspace(0, 1, steps)
         xs = np.round(x0 + (x1 - x0) * t).astype(int)
         ys = np.round(y0 + (y1 - y0) * t).astype(int)
-        blend(ys, xs, 0.45)
+        blend(ys, xs, shades[i + 1], 0.45)
         if abs(x1 - x0) >= abs(y1 - y0):  # second pixel across the line
-            blend(ys + 1, xs, 0.45)
+            blend(ys + 1, xs, shades[i + 1], 0.45)
         else:
-            blend(ys, xs + 1, 0.45)
-    oy, ox = np.mgrid[-r:r + 1, -r:r + 1]
-    disc = (ox ** 2 + oy ** 2) <= r * r
-    oy, ox = oy[disc], ox[disc]
-    for (x, y), a in zip(pts, alpha):  # dots, fainter for sooner steps
-        blend(round(y) + oy, round(x) + ox, a)
+            blend(ys, xs + 1, shades[i + 1], 0.45)
+
+    def disc(radius):
+        oy, ox = np.mgrid[-radius:radius + 1, -radius:radius + 1]
+        inside = (ox ** 2 + oy ** 2) <= radius * radius
+        return oy[inside], ox[inside]
+
+    dot, last = disc(r), disc(r + 1)
+    for i, (x, y) in enumerate(pts):
+        oy, ox = last if i == n - 1 else dot
+        blend(round(y) + oy, round(x) + ox, shades[i], 1.0 if i == n - 1 else 0.8)
     return frame
 
 
 def draw_gaze_prediction(frame: np.ndarray, uv, path=None) -> np.ndarray:
-    """The gaze prediction as on the control page: all predicted steps (`path`) and the ring
-    on the chosen step (`uv`)."""
+    """The gaze prediction: all predicted steps (`path`) and the ring on the chosen step (`uv`)."""
     draw_gaze_path(frame, path)
     return draw_gaze(frame, uv)

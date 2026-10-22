@@ -10,17 +10,17 @@ One process: ffmpeg decodes a pre-downscaled video as is, and each enabled sourc
             the SR model around the predicted gaze (--fovea, --fovea-k; --no-fovea-sr for bicubic only)
 The sources are sent in lockstep, frame for frame, so a run goes at the pace of its
 slowest source: source, bicubic and foveated with --no-fovea-sr are real time; foveated
-with SR and vsr play in slow motion. The
-video loops until Ctrl-C (or plays once with --once).
+with SR and vsr can be slower. The
+video plays once (from --start, up to --frames frames), or until Ctrl-C.
 
 --ui opens a control page instead: pick the options there, start and stop the stream,
 and change the gaze step and head pose (drag or arrow keys) live.
 
 Usage:
     python main.py
-    python main.py <path_to_video> [--sources bicubic,foveated] [--k 3] [--no-fovea-sr] [--fovea 96] [--fovea-k 1]
-                   [--no-fovea-outline] [--no-fovea-gaze]
-                   [--batch 2] [--start 0] [--frames N] [--once] [--device mps] [--name NAME]
+    python main.py <path_to_video> [--sources bicubic,foveated] [--k 3] [--no-fovea-sr] [--fovea 64] [--fovea-k 5]
+                   [--no-fovea-outline] [--no-fovea-gaze] [--no-fovea-ane] [--no-fovea-overlap]
+                   [--batch 2] [--start 0] [--frames N] [--device mps] [--name NAME]
                    [--gaze-trace head.csv]
     python main.py --ui [--ui-host 0.0.0.0] [--ui-port 8000]
 """
@@ -48,20 +48,24 @@ def parse_args():
     parser.add_argument("--k", type=int, default=3, help="keyframe stride")
     parser.add_argument("--vsr-crop", type=int, default=None,
                         help="source, bicubic and vsr: send only a centred square of this many LR px (default: whole frame)")
-    parser.add_argument("--fovea", type=int, default=96,
-                        help="foveated only: side of the LR square around the gaze upscaled by the SR model")
+    parser.add_argument("--fovea", type=int, default=64,
+                        help="foveated only: side of the LR square around the gaze upscaled by the SR model (default 64)")
     parser.add_argument("--fovea-sr", action=argparse.BooleanOptionalAction, default=True,
                         help="foveated only: run the SR model around the gaze (default: on; off = bicubic + gaze prediction)")
-    parser.add_argument("--fovea-k", type=int, default=1,
-                        help="foveated only: SR on every k-th frame's crop, RIFE in between (default 1: every frame)")
+    parser.add_argument("--fovea-k", type=int, default=5,
+                        help="foveated only: SR on every k-th frame's crop, RIFE in between (default 5; 1: every frame)")
     parser.add_argument("--fovea-outline", action=argparse.BooleanOptionalAction, default=True,
                         help="foveated only: outline the region the SR model upscaled (default: on)")
     parser.add_argument("--fovea-gaze", action=argparse.BooleanOptionalAction, default=True,
                         help="foveated only: draw the gaze prediction too (default: on)")
+    parser.add_argument("--fovea-ane", action=argparse.BooleanOptionalAction, default=True,
+                        help="foveated only: run the SR model on the Apple Neural Engine when available (MPS, coremltools; default: on)")
+    parser.add_argument("--fovea-overlap", action=argparse.BooleanOptionalAction, default=True,
+                        help="foveated, Neural Engine, --fovea-k > 1: upscale the next stretch while the GPU finishes this one "
+                             "(default: on; faster, frames held --fovea-k frames longer)")
     parser.add_argument("--batch", type=int, default=2, help="frames per push()")
     parser.add_argument("--start", type=float, default=0.0, help="start offset in seconds")
     parser.add_argument("--frames", type=int, default=None, help="stop after N frames")
-    parser.add_argument("--once", action="store_true", help="play once instead of looping")
     parser.add_argument("--device", default=None, help="cuda, mps or cpu (default: auto)")
     parser.add_argument("--name", default="StreamNDI", help="NDI name prefix: sources are <name>-Source, -Bicubic, ...")
     parser.add_argument("--gaze-trace", default=None,
@@ -81,8 +85,8 @@ def parse_args():
 def main():
     args = parse_args()
     opts = StreamOptions(
-        video=args.video, sources=args.sources, k=args.k, vsr_crop=args.vsr_crop, fovea_sr=args.fovea_sr, fovea=args.fovea, fovea_k=args.fovea_k, fovea_outline=args.fovea_outline, fovea_gaze=args.fovea_gaze,
-        batch=args.batch, start=args.start, frames=args.frames, once=args.once, device=args.device, name=args.name,
+        video=args.video, sources=args.sources, k=args.k, vsr_crop=args.vsr_crop, fovea_sr=args.fovea_sr, fovea=args.fovea, fovea_k=args.fovea_k, fovea_outline=args.fovea_outline, fovea_gaze=args.fovea_gaze, fovea_ane=args.fovea_ane, fovea_overlap=args.fovea_overlap,
+        batch=args.batch, start=args.start, frames=args.frames, device=args.device, name=args.name,
     )
     live = LiveSettings(trace_path=args.gaze_trace)
 

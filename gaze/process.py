@@ -58,7 +58,9 @@ def _serve(conn, factory, kwargs):
         try:
             start = time.perf_counter()
             out = predictor.push(msg[1], msg[2])
-            stats = {"model_s": time.perf_counter() - start, "cpu_s": time.process_time(), "mps_mb": _mps_mb()}
+            stats = {"model_s": time.perf_counter() - start, "cpu_s": time.process_time(), "mps_mb": _mps_mb(),
+                     # the two models' share (GazePredictor): UniSal per sample, the LSTM per prediction
+                     "saliency_s": getattr(predictor, "last_saliency_s", None), "lstm_s": getattr(predictor, "last_lstm_s", None)}
             if out is not None:
                 probs = out.get("task_probs")
                 out = {"offsets": np.asarray(out["offsets"], np.float32),

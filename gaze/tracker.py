@@ -184,8 +184,10 @@ class ThreadedGazeTracker(GazeTracker):
         self.dropped = 0
         # Cumulative, for stats(): predictions made, seconds in the model (child process) and
         # waiting for it (round trip), CPU seconds of the worker thread and of the child.
+        # The two models apart (when the predictor reports them): seconds in UniSal over all samples,
+        # and in the LSTM over the lstm_n samples it predicted on (none before 15 are buffered).
         self._counters = {"predictions": 0, "model_s": 0.0, "roundtrip_s": 0.0, "worker_cpu_s": 0.0,
-                          "child_cpu_s": None, "child_mps_mb": None}
+                          "child_cpu_s": None, "child_mps_mb": None, "saliency_s": 0.0, "lstm_s": 0.0, "lstm_n": 0}
         self._result_tick = None
         super().__init__(*args, **kwargs)
         self._worker = threading.Thread(target=self._run, name="gaze-model", daemon=True)
@@ -255,6 +257,10 @@ class ThreadedGazeTracker(GazeTracker):
                         c["predictions"] += 1
                         c["roundtrip_s"] += roundtrip
                         c["model_s"] += child.get("model_s", roundtrip)
+                        c["saliency_s"] += child.get("saliency_s") or 0.0
+                        if child.get("lstm_s") is not None:
+                            c["lstm_s"] += child["lstm_s"]
+                            c["lstm_n"] += 1
                         c["worker_cpu_s"] = time.thread_time()
                         c["child_cpu_s"] = child.get("cpu_s")
                         c["child_mps_mb"] = child.get("mps_mb")

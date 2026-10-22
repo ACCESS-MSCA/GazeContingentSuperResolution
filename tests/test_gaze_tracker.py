@@ -318,20 +318,24 @@ def test_process_predictor_reports_child_stats():
     p = ProcessPredictor(fake_factory)
     try:
         p.push(np.zeros((8, 8, 3), np.uint8), (0, 0))
-        assert set(p.last_stats) == {"model_s", "cpu_s", "mps_mb"}
+        assert set(p.last_stats) == {"model_s", "cpu_s", "mps_mb", "saliency_s", "lstm_s"}
         assert p.last_stats["model_s"] >= 0 and p.last_stats["cpu_s"] > 0
+        assert p.last_stats["saliency_s"] is None  # the fake does not time its parts
     finally:
         p.close()
 
 
-def test_draw_gaze_path_blends_dots_stronger_for_later_steps():
-    from ndi.overlay import draw_gaze_path, draw_gaze_prediction
+def test_draw_gaze_path_in_shades_of_green_with_the_last_step_strongest():
+    from ndi.overlay import PATH_LAST, draw_gaze_path, draw_gaze_prediction
 
     frame = np.zeros((200, 400, 4), np.uint8)
     path = [(0.1 + 0.04 * i, 0.5) for i in range(20)]
     draw_gaze_path(frame, path)
-    first, last = frame[100, int(0.1 * 399), 1], frame[100, int(0.86 * 399), 1]
-    assert 0 < first < last == 255  # green channel: faint first step, full last step
+    first, last = frame[100, round(0.1 * 399), :3].astype(int), frame[100, round(0.86 * 399), :3].astype(int)
+    for b, g, r in (first, last):
+        assert g > b and g > r  # green
+    assert first[0] > last[0]  # paler (more blue and red) for the soonest step
+    assert tuple(last) == tuple(PATH_LAST.astype(int))  # the last step: opaque, deep green
     assert frame[:50].max() == 0  # nothing far from the path
     draw_gaze_path(frame, None)  # no prediction yet: no-op
     draw_gaze_prediction(np.zeros((200, 400, 4), np.uint8), (0.5, 0.5), path)  # ring + path, must not raise
