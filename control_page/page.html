@@ -851,8 +851,13 @@ async function poll() {
     const st = await api("/api/state"), s = st.status;
     $("state").textContent = s.state;
     $("state").className = `pill ${s.state}`;
+    // While streaming: the recent send rate (the Performance card's), not the average since the
+    // start, which the slow first frames (loading, compiling) keep below the video's fps for good.
+    // Once stopped: the run's average.
+    const recent = s.state === "streaming" && s.perf && s.perf.stream ? s.perf.stream.fps : null;
     $("stats").textContent = s.state === "idle" ? "" :
-      `${s.sent} frames · ${s.fps.toFixed(1)} fps` + (s.size ? ` · ${s.size[0]}×${s.size[1]}` : "");
+      `${s.sent} frames · ${(recent ?? s.fps).toFixed(1)} fps` + (recent === null && s.sent ? " average" : "") +
+      (s.size ? ` · ${s.size[0]}×${s.size[1]}` : "");
     if (s.size) document.documentElement.style.setProperty("--frame-aspect", `${s.size[0]} / ${s.size[1]}`);
     showPerf(s);
     showPipeline(st);
