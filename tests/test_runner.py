@@ -26,8 +26,9 @@ class FakeOutput:
 
     instance = None
 
-    def __init__(self, sources, fps, audio_data=None):
+    def __init__(self, sources, fps, audio_data=None, queue_frames=1):
         self.sources = sources  # {key: (name, width, height)}
+        self.queue_frames = queue_frames
         self.sent = []
         self.idle_s = 0.0
         self.dropped_timing_count = 0
@@ -40,6 +41,7 @@ class FakeOutput:
         return False
 
     def send(self, frames):
+        frames = frames() if callable(frames) else frames
         self.sent.append({k: f.shape for k, f in frames.items()})
 
     def restart(self):

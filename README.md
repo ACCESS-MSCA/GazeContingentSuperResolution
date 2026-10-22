@@ -27,7 +27,7 @@ This creates `.venv/` with Python 3.12 and the dependencies from `pyproject.toml
 | `bicubic` | `<name>-Bicubic` | 4x | bicubic interpolation |
 | `foveated` | `<name>-Foveated` | 4x | bicubic + the gaze prediction (all 20 predicted steps as dots, fainter = sooner, and a ring on the chosen step; `--no-fovea-gaze` hides it), and the SR model around the predicted gaze (`--fovea`, `--fovea-k`; the region is outlined unless `--no-fovea-outline`). `--no-fovea-sr`: no SR, bicubic + the gaze prediction only (real time) |
 
-All sources come from the same decoded frames and are sent in **lockstep**: each frame goes out on every enabled source once all of them have it, so a run goes at the pace of its slowest source. `source` (the default), `bicubic` and `foveated` with `--no-fovea-sr` are real time; `foveated` with SR (~3 fps at `--fovea-k 1`) or `vsr` slows every source down to match, which keeps them frame-for-frame comparable. The gaze model only runs when `foveated` is enabled.
+All sources come from the same decoded frames and are sent in **lockstep**: each frame goes out on every enabled source once all of them have it, so a run goes at the pace of its slowest source. `source` (the default), `bicubic` and `foveated` with `--no-fovea-sr` are real time; `foveated` with SR (~4 fps at `--fovea-k 1`) or `vsr` slows every source down to match, which keeps them frame-for-frame comparable. Frames are sent, paced to the video's fps, from a thread of their own, so the next frames are upscaled while earlier ones wait for their slot. The gaze model only runs when `foveated` is enabled.
 
 ```bash
 uv run python main.py                                           # Videos/big_buck_bunny_240x136.mp4 as StreamNDI-Source
@@ -76,7 +76,7 @@ uv run python main.py --ui                                      # control page i
 - **Horizon** (no setting): the foveated source uses the predicted gaze step at the end of its stretch of k frames, ⌈k × 30 / video fps⌉ (k counts video frames, steps are 30 Hz gaze samples): k = 1 → step 1 (33 ms ahead), k = 3 at 60 fps → step 2 (67 ms). That step places the SR crop and the ring of the gaze prediction overlay; StreamNDI-Foveated's box shows it (*horizon 2 · 67 ms*).
 - **Status** (header): state, frames sent, fps (polled 4×/s).
 - **Performance** (top right), updated twice a second:
-  - stream: send rate vs the video's fps, upscaling time per frame, frame budget used (share of each second not spent waiting for the next frame slot; 100% means it cannot keep up), late frames;
+  - stream: send rate vs the video's fps, upscaling time per frame, frame budget used (share of each second not spent waiting for room in the NDI send queue; 100% means it cannot keep up), late frames;
   - gaze model: predictions per second (input is 30 Hz), model time in its process, round trip, lag of the shown prediction behind the newest frame, queue and dropped samples;
   - threads and compute: CPU per thread and process as a share of one core (stream thread, gaze thread, whole stream process, model process), GPU (MPS) memory per process, peak RAM. GPU utilisation is not shown: macOS only exposes it to root (`sudo powermetrics`);
   - predicted task with its probability.
@@ -87,7 +87,7 @@ The page talks to a small JSON API (`/api/state`, `/api/start`, `/api/stop`, `/a
 
 The gaze model runs in a child process, driven by its own thread: each decoded frame carries the latest finished prediction (at most about one 30 Hz update behind), and if the model falls more than 1 s behind, samples are dropped and its window restarts (reported at the end of the run). A separate process rather than a thread because PyTorch's MPS backend is not thread-safe: running both on MPS in one process hung it.
 
-Head pose is sampled at the video's 30 Hz ticks as frames are decoded. When upscaling runs slower than real time (the SR model at ~6 fps), video time runs slow too, so live head motion reaches the model as if it were faster than it was. Use bicubic for live head control until the pipeline runs in real time.
+Head pose is sampled at the video's 30 Hz ticks as frames are decoded. When upscaling runs slower than real time (foveated SR at 4–30 fps), video time runs slow too, so live head motion reaches the model as if it were faster than it was. Use bicubic for live head control until the pipeline runs in real time.
 
 ### Viewing the stream
 
@@ -109,19 +109,19 @@ ffmpeg -i Videos/big_buck_bunny.mp4 -vf "scale=iw/8:-2:flags=lanczos" -c:v libx2
 
 Performance on an Apple M4 (MPS):
 
-- 240x136 input (960x544 output): about 6 fps, so the stream plays in slow motion against the 60 fps source. Bicubic keeps up with the 60 fps source, as does foveated with SR off.
-- 480x270 input (1920x1080 output): the SR model runs out of memory. The model's self-attention builds a very large buffer on MPS; NVIDIA GPUs avoid this with memory-efficient attention.
+- 240x136 input (960x544 output): about 1.6 fps at k = 3 and 0.5 fps at k = 1, so the stream plays in slow motion against the 60 fps source. Bicubic keeps up with the 60 fps source, as does foveated with SR off.
+- 480x270 input (1920x1080 output): the SR model runs out of memory (it asks for a 20 GB buffer). The model's self-attention builds a very large buffer on MPS; NVIDIA GPUs avoid this with memory-efficient attention.
 
-Real-time output needs an NVIDIA GPU or a lighter model.
+On MPS the model runs in float16 (float32 is about 25% slower for the same output). Real-time output needs an NVIDIA GPU or a lighter model.
 
 ### Gaze-guided upscaling (the `foveated` source)
 
 `upscale/foveated.py`: every frame is upscaled with bicubic; the SR model then runs on a `--fovea` × `--fovea` LR square centred on the predicted gaze point at the step where the gaze will be at the end of its stretch of k frames (see *Horizon* above), and the result is blended in with a round, soft-edged mask. The foveated source shows that region as a dashed cyan circle by default (`--no-fovea-outline`, or untick *outline* on the page, for the clean result). With no prediction yet (the first 15 gaze samples), the fovea sits at the frame centre.
 
 - **Colour match.** On a small crop the SR model shifts the colours (5–10 levels brighter in testing; on a whole frame it keeps them), which showed as a light disc. Only the SR's fine detail is used: the crop's low frequencies come from bicubic, so colours match exactly.
-- **`--fovea-k`** (default 1). At 1, the SR model runs on every frame's crop, at that frame's gaze point, with no buffering. At k > 1 it runs only on every k-th frame's crop (keyframes), and RIFE makes the crops in between. RIFE can only blend crops cut from the same place, so the crop stays still for each stretch of k frames. Frames are held until the stretch's closing keyframe is decoded (up to k−1 frames, as with vsr). The crop is centred on the mean of the stretch's gaze points, so it covers where the gaze is during the stretch. If the crop moves by more than a quarter of the fovea, the stretch's opening keyframe is upscaled again at the new place; otherwise its SR is reused. On an M4 (96 px fovea, head still): k = 1 runs at 3.1 fps (SR 293 ms per frame), k = 3 at 6.8 fps (SR 122 + RIFE 14 + blend 4 ms), k = 5 at 9.2 fps (SR 62 + RIFE 18 + blend 4 ms). The tradeoff is that the fovea moves in steps, once per stretch.
-- **Speed** (Apple M4, MPS, 96 px fovea): about 3.1 fps, against about 0.4 fps for SR on the whole frame every frame (`--sources vsr --k 1`). The cost depends on the fovea size, not the input: 480x270 input (1920x1080 output), where whole-frame SR runs out of memory, also runs at about 3.1 fps.
-- **Slow motion.** Below real time the video plays slowly and gaze is sampled in video time, so gaze updates come slowly too (about 1.6 per second at 3 fps on a 60 fps video; the first prediction after about 10 s). Recorded head traces stay consistent; live head motion reaches the model faster than it was.
+- **`--fovea-k`** (default 1). At 1, the SR model runs on every frame's crop, at that frame's gaze point, with no buffering. At k > 1 it runs only on every k-th frame's crop (keyframes), and RIFE makes the crops in between. RIFE can only blend crops cut from the same place, so the crop stays still for each stretch of k frames. Frames are held until the stretch's closing keyframe is decoded (up to k−1 frames, as with vsr). The crop is centred on the mean of the stretch's gaze points, so it covers where the gaze is during the stretch. If the crop moves by more than a quarter of the fovea, the stretch's opening keyframe is upscaled again at the new place; otherwise its SR is reused. On an M4 (96 px fovea, head still): k = 1 runs at 4.0 fps (SR 237 ms per frame), k = 3 at 9.4 fps (SR 80 + RIFE 13 + blend 2 ms), k = 5 at 13.7 fps (SR 49 + RIFE 14 + blend 2 ms). The tradeoff is that the fovea moves in steps, once per stretch.
+- **Speed** (Apple M4, MPS, 96 px fovea): about 4 fps, against about 0.5 fps for SR on the whole frame every frame (`--sources vsr --k 1`). The cost depends on the fovea size, not the input: 480x270 input (1920x1080 output), where whole-frame SR runs out of memory, also runs at about 3.9 fps. A smaller fovea is much cheaper: 64 px at k = 5 runs at about 29 fps (SR 95 ms per crop, 19 ms per frame).
+- **Slow motion.** Below real time the video plays slowly and gaze is sampled in video time, so gaze updates come slowly too (about 2 per second at 4 fps on a 60 fps video; the first prediction after about 7.5 s). Recorded head traces stay consistent; live head motion reaches the model faster than it was.
 
 ## Gaze prediction
 

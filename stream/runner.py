@@ -4,6 +4,7 @@ run_stream() is used by the command line (main.py) and, in a background thread, 
 control page (control_page.controller.StreamController).
 """
 
+import functools
 import itertools
 import threading
 import time
@@ -148,9 +149,12 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
         audio_data = audio_data[:, int(opts.start * AUDIO_SAMPLE_RATE):]
 
     # One NDI source per enabled source; NDIOutput attaches the same audio block to each per
-    # frame and paces the sends to the video's fps.
+    # frame and paces the sends to the video's fps, from its own thread. Its queue holds one
+    # burst of frames (an upscaler returns up to k of them at once), so the next stretch is
+    # upscaled while they are sent.
     names = opts.source_names()
-    output = NDIOutput({k: (n, *sizes[k]) for k, n in names.items()}, fps, audio_data=audio_data)
+    burst = max([opts.batch] + [k for key, k in (("vsr", opts.k), ("foveated", opts.fovea_k)) if key in upscalers])
+    output = NDIOutput({k: (n, *sizes[k]) for k, n in names.items()}, fps, audio_data=audio_data, queue_frames=burst)
     print("Press Ctrl-C to stop.\n")
 
     started = time.monotonic()
@@ -232,6 +236,28 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
                         "mps_mb": mps_mb(), "model_mps_mb": g.get("child_mps_mb"), "rss_mb": peak_rss_mb()},
         })
 
+    def make_frames(lr, ups, points, path):
+        """The BGRA frame of each enabled source, with its overlays drawn on."""
+        frames = {}
+        if "source" in enabled:
+            frames["source"] = rgb_to_bgra(lr if crop_box is None else lr[crop_box[1]:crop_box[3], crop_box[0]:crop_box[2]])
+        if "bicubic" in enabled:
+            bic = ups["bicubic"]  # the whole frame, shared with foveated: cut after upscaling
+            frames["bicubic"] = rgb_to_bgra(bic if hr_box is None else bic[hr_box[1]:hr_box[3], hr_box[0]:hr_box[2]])
+        if "foveated" in enabled:
+            if opts.fovea_sr:
+                fov, box = ups["foveated"]
+                frames["foveated"] = rgb_to_bgra(fov)
+                if opts.fovea_outline:
+                    draw_fovea(frames["foveated"], box)
+            else:  # SR off: the bicubic frame, with the gaze prediction drawn on it
+                frames["foveated"] = rgb_to_bgra(ups["bicubic"])
+            if opts.fovea_gaze:
+                draw_gaze_prediction(frames["foveated"], points.get("foveated"), path)
+        if "vsr" in enabled:
+            frames["vsr"] = rgb_to_bgra(ups["vsr"])
+        return frames
+
     def send_ready():
         """Sends every frame that all its sources have, oldest first, and reports throughput."""
         nonlocal sent, next_perf
@@ -239,25 +265,8 @@ def run_stream(opts, live=None, status=None, stop=None, cache=None):
             lr, info, points = pending.popleft()
             path = info["path"] if info else None
             ups = {k: q.popleft() for k, q in ready.items()}
-            frames = {}
-            if "source" in enabled:
-                frames["source"] = rgb_to_bgra(lr if crop_box is None else lr[crop_box[1]:crop_box[3], crop_box[0]:crop_box[2]])
-            if "bicubic" in enabled:
-                bic = ups["bicubic"]  # the whole frame, shared with foveated: cut after upscaling
-                frames["bicubic"] = rgb_to_bgra(bic if hr_box is None else bic[hr_box[1]:hr_box[3], hr_box[0]:hr_box[2]])
-            if "foveated" in enabled:
-                if opts.fovea_sr:
-                    fov, box = ups["foveated"]
-                    frames["foveated"] = rgb_to_bgra(fov)
-                    if opts.fovea_outline:
-                        draw_fovea(frames["foveated"], box)
-                else:  # SR off: the bicubic frame, with the gaze prediction drawn on it
-                    frames["foveated"] = rgb_to_bgra(ups["bicubic"])
-                if opts.fovea_gaze:
-                    draw_gaze_prediction(frames["foveated"], points.get("foveated"), path)
-            if "vsr" in enabled:
-                frames["vsr"] = rgb_to_bgra(ups["vsr"])
-            output.send(frames)
+            # Converted and drawn on in the sender thread, off the upscaling thread.
+            output.send(functools.partial(make_frames, lr, ups, points, path))
             sent += 1
             elapsed = time.monotonic() - started
             status.update(sent=sent, fps=sent / elapsed, gaze=points.get("foveated"), gaze_info=info)
