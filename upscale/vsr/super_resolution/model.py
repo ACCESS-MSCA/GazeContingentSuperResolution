@@ -134,9 +134,9 @@ def _prepare_pruned_unet(unet):
     if hasattr(unet, "time_embedding"):
         del unet.time_embedding
 
-    unet.apply(
-        lambda m: m.register_forward_pre_hook(lambda module, p: p[0].to(unet.device))
-    )
+    # AdcSR also hooked every module to move its input to unet.device. Inputs are already
+    # on the device (SuperResolutionPipeline moves the batch), and on MPS the 268 hooks
+    # cost ~60 ms of CPU per call, so they are left out; the weights load the same.
 
     new_conv_in = nn.Conv2d(16, 320, 3, padding=1)
     new_conv_in.weight.data = unet.conv_in.weight.data.repeat(1, 4, 1, 1)

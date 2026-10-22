@@ -13,6 +13,8 @@ from .scheduling import group_gaps_by_timesteps, plan_schedule
 
 
 def _default_dtype(device: torch.device):
+    if device.type == "mps":
+        return torch.float16  # ~25% faster than float32 on an M4, same output (66 dB PSNR)
     if device.type != "cuda":
         return torch.float32
     return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
