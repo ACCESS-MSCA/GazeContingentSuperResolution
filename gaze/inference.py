@@ -129,9 +129,24 @@ class GazePredictor:
     """Holds the UniSal and gaze models. `predict` takes a full 15-frame window; `push` feeds one frame at a
     time (saliency is computed once per frame) and returns a prediction once 15 frames are buffered."""
 
-    def __init__(self, model_path=MODEL_PATH, sal_path=SAL_PATH, device=None):
+    def __init__(self, model_path=MODEL_PATH, sal_path=SAL_PATH, device=None, coreml=None):
+        """`coreml`: run UniSal on the Neural Engine through Core ML (gaze.coreml), off the GPU.
+        None: on MPS when coremltools is installed."""
+        from . import coreml as coreml_unisal
+
         self.device = torch.device(device) if device is not None else default_device()
-        self.unisal = load_unisal_model(sal_path, self.device)
+        if coreml is None:
+            coreml = self.device.type == "mps" and coreml_unisal.available()
+        self.coreml = coreml
+        if coreml:
+            self.unisal = coreml_unisal.CoreMLUniSal(sal_path, UNISAL_SIZE)
+        else:
+            self.unisal = load_unisal_model(sal_path, self.device)
+        if not coreml and self.device.type != "cpu":
+            # Compiled, the many small kernels of UniSal run fused: 17 -> 11 ms per frame on an
+            # M4 (MPS), same output. The first call per input shape compiles (gaze.process warms
+            # it up before streaming); TORCHDYNAMO_DISABLE=1 turns it off.
+            self.unisal = torch.compile(self.unisal)
         self.model = load_gaze_model(model_path, self.device)
         self._sal = []
         self._hmd = []
@@ -142,8 +157,9 @@ class GazePredictor:
         them (UniSal static mode, per-image standardisation, scaled by 2 and shifted by -1)."""
         imgs = np.stack([np.asarray(Image.fromarray(np.asarray(f, np.uint8)).resize(UNISAL_SIZE, Image.LANCZOS))
                          for f in frames])
-        x = torch.as_tensor(imgs).to(self.device).permute(0, 3, 1, 2).float() / 255.0
-        x = (x - RGB_MEAN.to(self.device)) / RGB_STD.to(self.device)
+        device = torch.device("cpu") if self.coreml else self.device  # Core ML takes numpy
+        x = torch.as_tensor(imgs).to(device).permute(0, 3, 1, 2).float() / 255.0
+        x = (x - RGB_MEAN.to(device)) / RGB_STD.to(device)
         s = self.unisal(x.unsqueeze(1)).squeeze(1)  # (N, 1, H, W)
         mean = s.mean(dim=(1, 2, 3), keepdim=True)
         var = s.var(dim=(1, 2, 3), unbiased=False, keepdim=True)

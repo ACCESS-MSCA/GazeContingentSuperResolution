@@ -49,3 +49,14 @@ def test_rejects_wrong_window_length(predictor):
     frames, hmd = window()
     with pytest.raises(ValueError):
         predictor.predict(frames[1:], hmd[1:])
+
+
+def test_coreml_unisal_is_close_to_the_original_pipeline(predictor):
+    from gaze import coreml
+    if not coreml.available():
+        pytest.skip("needs macOS with coremltools")
+    # UniSal on the Neural Engine computes in float16: close to the reference, not identical
+    out = GazePredictor(device="cpu", coreml=True).predict(*window())
+    ref = predictor.predict(*window())
+    np.testing.assert_allclose(out["offsets"], ref["offsets"], atol=0.5)  # degrees; 1 LR px is ~0.45
+    np.testing.assert_allclose(out["task_probs"], ref["task_probs"], atol=0.01)

@@ -13,6 +13,8 @@ dependencies = [
     "safetensors",
     "accelerate",
     "cyndilib",
+    # UniSal (gaze model) on the Neural Engine on macOS: gaze/coreml.py
+    "coremltools>=9.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
