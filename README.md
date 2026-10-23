@@ -187,3 +187,23 @@ gaze/               gaze prediction from viewport + head motion, see gaze/README
 tests/              vsr, gaze, control and NDI tests: uv run pytest (no GPU needed)
 Videos/             test videos (not in git)
 ```
+
+## License
+
+Apache License 2.0, see `LICENSE`. Code adapted from other projects keeps its license:
+
+| Code | Source | License |
+|---|---|---|
+| `upscale/vsr/super_resolution/` | [AdcSR](https://github.com/Guaishou74851/AdcSR) | Apache 2.0 |
+| `upscale/vsr/interpolation/rife/` | [Practical-RIFE](https://github.com/hzwer/Practical-RIFE) | MIT, see `rife/LICENSE` |
+| `gaze/unisal/` | [UniSal](https://github.com/rdroste/unisal) | Apache 2.0, see `unisal/LICENSE` |
+
+The SR model builds on Stable Diffusion 2.1, whose weights download from Hugging Face on the first run under their own license (CreativeML Open RAIL++-M).
+
+## Acknowledgement
+
+<img src="docs/eu-flag.svg" alt="EU emblem" height="60" align="left">
+
+This work is part of the [ACCESS](https://cordis.europa.eu/project/id/101129865) project, which has received funding from the European Union's Horizon Europe research and innovation programme under the Marie Skłodowska-Curie grant agreement No 101129865.
+
+Views and opinions expressed are however those of the author(s) only and do not necessarily reflect those of the European Union or the European Research Executive Agency (REA). Neither the European Union nor the granting authority can be held responsible for them.
